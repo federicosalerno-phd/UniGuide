@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "UniGuide: modular mandibular cutting-guide composer"
+abstract: >-
+  Desktop tool to compose standardized, partially reusable mandibular cutting
+  guide modules and auto-generate the patient-specific connector that locks them
+  into a single rigid body, exporting a print-ready STL for a resin workflow.
+type: software
+authors:
+  - family-names: Salerno
+    given-names: Federico
+    affiliation: "Politecnico di Torino"
+    email: federico.salerno@polito.it
+    # orcid: "https://orcid.org/0000-0001-5282-9513"   # add if available
+version: "0.1.0"
+date-released: "2026-06-25"
+license: MIT
+url: "https://github.com/federicosalerno-phd/UniGuide"
+repository-code: "https://github.com/federicosalerno-phd/UniGuide"
+keywords:
+  - mandibular reconstruction
+  - cutting guide
+  - surgical guide
+  - standardization
+  - 3D printing

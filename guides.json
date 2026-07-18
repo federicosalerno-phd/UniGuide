@@ -1,0 +1,9 @@
+{
+  "_comment": "Unified-module size library. Lg=length, Wg=width, Hg=height, nW=notch width, nD=notch depth (mm). Loaded by Backend.library(); edit freely.",
+  "sizes": [
+    {"id": "S",  "Lg": 14, "Wg": 9,  "Hg": 8,  "nW": 5, "nD": 4},
+    {"id": "M",  "Lg": 18, "Wg": 11, "Hg": 9,  "nW": 6, "nD": 4},
+    {"id": "L",  "Lg": 22, "Wg": 13, "Hg": 10, "nW": 7, "nD": 5},
+    {"id": "XL", "Lg": 26, "Wg": 15, "Hg": 11, "nW": 8, "nD": 5}
+  ]
+}

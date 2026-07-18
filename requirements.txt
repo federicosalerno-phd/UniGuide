@@ -1,0 +1,16 @@
+# UniGuide: Python dependencies (validated on Python 3.11).
+# Install into a virtualenv:  pip install -r requirements.txt
+# The app prefers PyQt6 and falls back to PyQt5 + PyQtWebEngine if PyQt6 is absent.
+
+# --- GUI: Qt + embedded Chromium web view ---
+PyQt6==6.11.0
+PyQt6-WebEngine==6.11.0
+
+# --- welded fibula-guide export (backend boolean via manifold3d) ---
+# Used only by Backend.weld_fibula_guides (lazy-imported); the app still starts
+# without them, but the "Export welded guides" button needs them.
+numpy==1.26.4
+scipy==1.17.1
+trimesh==4.12.2
+manifold3d==3.5.2
+networkx==3.6.1

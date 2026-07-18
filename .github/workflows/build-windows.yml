@@ -1,0 +1,52 @@
+name: Build Windows app
+
+# Builds the standalone Windows .exe with PyInstaller and:
+#  - always uploads it as a downloadable build artifact (Actions tab), and
+#  - when you publish a GitHub *Release*, attaches the zip to that release
+#    (this is the file end users download — the OrcaSlicer model).
+#
+# Trigger it from GitHub: Actions tab -> "Build Windows app" -> Run workflow,
+# or just publish a Release / push a tag like v0.1.0.
+
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch: {}   # manual "Run workflow" button
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "setuptools<81" pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller UniGuide.spec --noconfirm
+
+      - name: Zip the one-folder app
+        run: Compress-Archive -Path dist/UniGuide/* -DestinationPath UniGuide-windows.zip
+        shell: pwsh
+
+      - name: Upload build artifact (Actions tab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniGuide-windows
+          path: UniGuide-windows.zip
+
+      - name: Attach to the Release (when triggered by a published release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: UniGuide-windows.zip

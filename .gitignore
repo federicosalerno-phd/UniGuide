@@ -1,0 +1,53 @@
+# ── App / run outputs ───────────────────────────────────────────────────────
+# Exported guides/connectors land here as STL; they are regenerable. But the
+# SHIPPED assets under modules/ and input/ MUST be tracked (the app + the build
+# need them), so re-include those two folders below.
+*.stl
+*.STL
+# Re-include ONLY the shipped assets (whitelist). Everything else *.stl stays
+# ignored — in particular the "* - CT.stl" scans in Input/ are NOT published.
+!modules/
+!modules/**
+!Input/Demo_mandible.stl
+!Input/Demo_fibula.stl
+
+# ── Patient / CT-derived data, NOT for public release ───────────────────────
+# The shipped demo uses the synthetic Demo_*.stl; the "* - CT.stl" scans and saved
+# sessions look CT/patient-derived, so they are NOT published by default. Delete these
+# lines (and re-add the files) only if you have confirmed the data is safe to share.
+cases/
+*_case.json
+/Input/Mandible - CT.stl
+/Input/Fibula - CT.stl
+/Input/uniguide_session.json
+/Input/uniguide_session_1.json
+
+# ── Blender auto-backups ────────────────────────────────────────────────────
+*.blend1
+
+# ── PyInstaller build output (regenerable; GitHub Actions builds the release) ─
+build/
+dist/
+*.manifest
+
+# ── Interactive-debug scratch renders ───────────────────────────────────────
+debug/
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── Development-only utilities (not part of the release) ────────────────────
+dev/
+
+# ── Local tooling / editor / OS cruft ───────────────────────────────────────
+.vscode/
+.claude/
+*.bak
+desktop.ini
+.DS_Store
+Thumbs.db
