@@ -323,6 +323,13 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <div class="dz-sub">mandible + fibula from input/</div>
             </div>
           </div>
+          <!-- SEGMENTATION scaffold: entry point for the future DICOM segmentation module (built as a
+               separate project). Non-functional placeholder for now, so the section is predisposed. -->
+          <div class="p0note" style="max-width:560px;margin-top:14px;padding:10px 12px;border:1px dashed rgba(255,255,255,.16);border-radius:8px;color:var(--t2)">
+            <b style="color:var(--t1)">Segmentation (DICOM), in development.</b>
+            A built-in environment to load a DICOM series and segment structures directly here, the tumour and the nerves, then feed the resulting meshes straight into this workflow.
+            <div style="margin-top:8px"><button class="btn-outline" onclick="openSegmentation()">Open segmentation</button></div>
+          </div>
           <input type="file" id="fileIn" accept=".stl" style="display:none" onchange="onPickFile(event)">
           <div id="ftag" style="display:none"><div class="ftag">&#10003;<span id="fname">demo_mandible</span></div></div>
           <div id="imgstats" style="display:none">
@@ -796,7 +803,8 @@ let fibNodeDrag=-1;                // index of the segment node currently being 
 // donor fibula bone + transfer of the planned segments onto its axis
 let fibulaMesh=null;               // loaded fibula STL (its own environment)
 let fibulaAxis=null;               // {o,d,len,safeMin,safeMax} shaft axis, world
-let teethMesh=null, teethPivot=null;   // OPTIONAL teeth STL: a visual reference the user aligns manually to the mandible. teethPivot lives INSIDE modelPivot so it rides the mandible's orientation (stays registered), while its OWN rigid transform (P.teeth rot+trans) is independent of the bone. Everything teeth is optional — absent → no-op everywhere.
+let teethMesh=null, teethPivot=null;   // OPTIONAL teeth STL: a visual reference the user aligns manually to the mandible. teethPivot lives INSIDE modelPivot so it rides the mandible's orientation (stays registered), while its OWN rigid transform (P.teeth rot+trans) is independent of the bone. Everything teeth is optional, absent means a no-op everywhere.
+let teethAlign=null, teethAlignMarks=[];   // 3-point auto-align: {pairs:[{mand,teeth}], want:'mand'|'teeth'} while picking, else null
 let fibAxisLine=null;              // axis line viz
 let fibXferMeshes=[];              // real fibula bone pieces (clipped) on the DONOR fibula
 let fibMandPieces=[];             // the same real pieces transferred onto the MANDIBLE
@@ -902,7 +910,7 @@ const P={
   fibResectOpacity:0.22,                              // resected mandible opacity in the F.guides (mounted) step
   fibRot:0,                                           // donor fibula: SHARED axial rotation (deg) — the DONOR HARVEST clocking (spins the segments about the donor shaft; also changes the mandible pieces via the rigid map M)
   fibReconRot:0,                                       // RECONSTRUCTION: SHARED axial rotation (deg) of the transferred pieces about EACH segment's own mandible axis. A SEPARATE variable from fibRot (independent surgical DOF: how the graft is clocked once placed on the mandible), applied ONLY to fibMandPieces in buildFibulaTransfer's RECON branch — so it never disturbs the Donor step.
-  teeth:{rx:0,ry:0,rz:0, tx:0,ty:0,tz:0, show:true, op:0.5},   // OPTIONAL teeth reference: manual rigid alignment to the mandible (deg / mm, in the bone's local frame) + show + opacity
+  teeth:{rx:0,ry:0,rz:0, tx:0,ty:0,tz:0, show:true, op:1},     // OPTIONAL teeth reference: manual rigid alignment to the mandible (deg / mm, in the bone's local frame) + show + opacity. Opaque by default so the cyan/coral inside-outside tone reads clearly; fade with the slider to see the mandible through it.
   fibCylOpacity:0.35,                                 // donor overlay-cylinder opacity
   fhW:8, fhLift:14,                                   // fibula-segment handle: bar width + stand-off (mm)
   fibFace:null, fibConnFace:null,                     // picked cutting face + connector ("green") face (guide-local)
@@ -925,6 +933,32 @@ const M_bone=()=>new THREE.MeshStandardMaterial({color:0xcabba2,roughness:0.62,m
 // whole FIBULA guide is amber (one shade for the unified guide, another for its handles).
 const COL_MAND={conn:0x4f8ff7, joint:0x7aa9ff, post:0x3f7de0, gL:0x6aa3ff, gR:0x4585e0};
 const COL_FIB ={guide:0xef9a4d, conn:0xdb6f24};
+// Teeth reference: a cool cyan OUTER surface and a warm coral INNER surface, both clearly
+// distinct from the tan mandible (0xcabba2) and from each other, so orientation reads at a glance.
+const TEETH_OUT=0x63c8e0, TEETH_IN=0xd97a4a;
+// Vertex-cluster decimation of a flat triangle-soup (positions [x,y,z,...]); averages each cell to
+// one point. Dental scans are dense, and a reference overlay does not need full resolution, so this
+// keeps the viewer fluid. Returns a new flat soup.
+function decimateSoup(positions, cell){
+  const key=(x,y,z)=>Math.round(x/cell)+'_'+Math.round(y/cell)+'_'+Math.round(z/cell);
+  const acc=new Map();
+  for(let i=0;i<positions.length;i+=3){ const k=key(positions[i],positions[i+1],positions[i+2]);
+    let a=acc.get(k); if(!a){ a={x:0,y:0,z:0,n:0}; acc.set(k,a); } a.x+=positions[i]; a.y+=positions[i+1]; a.z+=positions[i+2]; a.n++; }
+  const rep=new Map(); acc.forEach((a,k)=>rep.set(k,[a.x/a.n,a.y/a.n,a.z/a.n]));
+  const out=[];
+  for(let i=0;i<positions.length;i+=9){
+    const ka=key(positions[i],positions[i+1],positions[i+2]);
+    const kb=key(positions[i+3],positions[i+4],positions[i+5]);
+    const kc=key(positions[i+6],positions[i+7],positions[i+8]);
+    if(ka===kb||kb===kc||kc===ka) continue;                          // collapsed triangle
+    const A=rep.get(ka),B=rep.get(kb),C=rep.get(kc);
+    const abx=B[0]-A[0],aby=B[1]-A[1],abz=B[2]-A[2], acx=C[0]-A[0],acy=C[1]-A[1],acz=C[2]-A[2];
+    const nx=aby*acz-abz*acy, ny=abz*acx-abx*acz, nz=abx*acy-aby*acx;
+    if(nx*nx+ny*ny+nz*nz<1e-10) continue;                            // near-zero area
+    out.push(A[0],A[1],A[2],B[0],B[1],B[2],C[0],C[1],C[2]);
+  }
+  return out;
+}
 // polygonOffset pushes the SOLID one depth unit away from the eye so the coplanar wireframe overlay that
 // edges() parents to every body wins the depth test deterministically. Without it the line and the triangle
 // it outlines have tying depth values; the GPU breaks the tie differently per pixel, and while a body is
@@ -1136,7 +1170,8 @@ function initOrbit(dom){
     if(mode===3){ axisDragCp=-1; axisTanDrag=null; mode=0; rebuildTumor(); return; }   // finished dragging an axis / tangency handle → full tumour rebuild
     // a click (no drag) with the left button does step-specific picking
     if(btn===0 && !moved){
-      if(curP===2){ if(P.tumorPick!=null) pickTumorAt(e); else if(P.planePickOn) pickAt(e); }   // Planes: tumour pick, OR a manual 3-point ONLY while the "Place plane points" toggle is armed (item 3)
+      if(curP===1 && teethAlign){ pickTeethAlignAt(e); }        // Orient: 3-point teeth<->mandible auto-align
+      else if(curP===2){ if(P.tumorPick!=null) pickTumorAt(e); else if(P.planePickOn) pickAt(e); }   // Planes: tumour pick, OR a manual 3-point ONLY while the "Place plane points" toggle is armed (item 3)
       else if(curP===SEGMENTS){ pickFibNodeAt(e); }             // Segments: move a segment node
       else if(curP===MGUIDE && P.facePick){ pickFaceAt(e); }  // M.guides: pick cutting face
       else if(curP===CONN){ pickLoftAt(e); }                  // Connector: click a guide face to override the auto loft face
@@ -4045,16 +4080,24 @@ function ingestTeeth(positions,name){
   if(!modelPivot){ toast('Load the mandible first'); return; }
   if(teethMesh){ disposeMesh(teethMesh); teethMesh=null; }
   if(!teethPivot){ teethPivot=new THREE.Group(); teethPivot.name='teethPivot'; modelPivot.add(teethPivot); }
+  // Decimate dense scans so the viewer stays fluid; a reference overlay does not need full resolution.
+  let pos=positions; const nTri=positions.length/9; let simplified=false;
+  if(nTri>40000){ pos=decimateSoup(positions,0.35); simplified=(pos.length/9)<nTri*0.9; }
   const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
   geo.computeVertexNormals(); geo.computeBoundingBox();
-  const ctr=new THREE.Vector3(); geo.boundingBox.getCenter(ctr); geo.translate(-ctr.x,-ctr.y,-ctr.z);   // centre on its own centroid → starts near the (also-centred) mandible for easy manual align
-  const mat=new THREE.MeshStandardMaterial({color:0xf3e9c8,roughness:0.5,metalness:0.02,side:THREE.DoubleSide,transparent:true,opacity:P.teeth.op,depthWrite:P.teeth.op>=0.999,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});
-  teethMesh=new THREE.Mesh(geo,mat); teethMesh.name='teeth'; teethMesh.userData.isTeeth=true; teethMesh.renderOrder=3;
-  teethMesh.add(edges(geo,0xbfa94a));
+  const ctr=new THREE.Vector3(); geo.boundingBox.getCenter(ctr); geo.translate(-ctr.x,-ctr.y,-ctr.z);   // centre on its own centroid, so it starts near the also-centred mandible for easy manual align
+  // Two single-sided meshes on the SAME geometry give a two-tone look, cyan outside, coral inside,
+  // so the surface orientation is obvious. No wireframe overlay, that was the main cause of the lag.
+  const opaque=(P.teeth.op>=0.999);
+  const mkMat=(col,sideFlag)=>new THREE.MeshStandardMaterial({color:col,roughness:0.5,metalness:0.02,side:sideFlag,transparent:!opaque,opacity:P.teeth.op,depthWrite:opaque});
+  teethMesh=new THREE.Group(); teethMesh.name='teeth'; teethMesh.userData.isTeeth=true;
+  const inner=new THREE.Mesh(geo, mkMat(TEETH_IN, THREE.BackSide));  inner.userData.teethFace='in';  inner.renderOrder=2;
+  const outer=new THREE.Mesh(geo, mkMat(TEETH_OUT,THREE.FrontSide)); outer.userData.teethFace='out'; outer.renderOrder=3;
+  teethMesh.add(inner); teethMesh.add(outer);
   teethPivot.add(teethMesh);
   applyTeeth(); applyTeethVis(); refreshLoadZones(); if(typeof syncTeethUI==='function')syncTeethUI(); if(typeof renderTeethPanel==='function')renderTeethPanel();
-  toast('Teeth loaded — align them to the mandible');
+  toast(simplified ? 'Teeth loaded and simplified for a fluid view, align them to the mandible' : 'Teeth loaded, align them to the mandible');
 }
 function openTeeth(){
   if(B&&B.open_teeth){ B.open_teeth(function(res){ if(!res)return; let d; try{d=JSON.parse(res);}catch(e){toast('Bad teeth data');return;} if(d.error){toast('Open failed: '+d.error);return;} ingestTeeth(d.positions,d.name); }); }
@@ -4063,7 +4106,7 @@ function openTeeth(){
 }
 function onDropTeeth(e){ e.preventDefault(); const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0]; if(!f)return;
   const rd=new FileReader(); rd.onload=()=>{ try{ ingestTeeth(parseSTL(rd.result),f.name); }catch(_){ toast('Could not parse teeth'); } }; rd.readAsArrayBuffer(f); }
-function clearTeeth(){ if(teethMesh){ disposeMesh(teethMesh); teethMesh=null; } P.teeth={rx:0,ry:0,rz:0,tx:0,ty:0,tz:0,show:true,op:0.5}; if(typeof syncTeethUI==='function')syncTeethUI(); if(typeof renderTeethPanel==='function')renderTeethPanel(); refreshLoadZones(); invalidate(); }
+function clearTeeth(){ if(teethMesh){ disposeMesh(teethMesh); teethMesh=null; } P.teeth={rx:0,ry:0,rz:0,tx:0,ty:0,tz:0,show:true,op:1}; if(typeof syncTeethUI==='function')syncTeethUI(); if(typeof renderTeethPanel==='function')renderTeethPanel(); refreshLoadZones(); invalidate(); }
 // apply the manual rigid transform (rot in the bone frame, then translation) to the teeth pivot. No teeth → no-op.
 function applyTeeth(){ if(!teethPivot)return; const t=P.teeth;
   teethPivot.quaternion.setFromEuler(new THREE.Euler((t.rx||0)*D2R,(t.ry||0)*D2R,(t.rz||0)*D2R,'XYZ'));
@@ -4088,8 +4131,10 @@ function teethJogMove(e){ if(!_tjog)return; const dx=e.clientX-_tjog.x; _tjog.x=
 function teethJogEnd(){ if(!_tjog)return; const el=$('jogTe_'+_tjog.a); if(el)el.classList.remove('drag'); _tjog=null;
   window.removeEventListener('pointermove',teethJogMove); window.removeEventListener('pointerup',teethJogEnd); }
 function onTeethShow(ck){ P.teeth.show=!!ck; applyTeethVis(); }
+function applyTeethOpacity(){ if(!teethMesh)return; const o=P.teeth.op, opaque=(o>=0.999);
+  teethMesh.traverse(m=>{ if(m.material){ m.material.opacity=o; m.material.transparent=!opaque; m.material.depthWrite=opaque; } }); }
 function onTeethOp(v){ P.teeth.op=Math.max(0,Math.min(1,(+v)/100)); const sv=$('svTeethOp'); if(sv)sv.textContent=Math.round(P.teeth.op*100)+'%';
-  if(teethMesh&&teethMesh.material){ teethMesh.material.opacity=P.teeth.op; teethMesh.material.transparent=P.teeth.op<0.999; teethMesh.material.depthWrite=P.teeth.op>=0.999; } invalidate(); }
+  applyTeethOpacity(); invalidate(); }
 function resetTeeth(){ P.teeth.rx=P.teeth.ry=P.teeth.rz=P.teeth.tx=P.teeth.ty=P.teeth.tz=0; applyTeeth(); syncTeethUI(); }
 // build the teeth panel body: 3 rotation jogs + 3 translation jogs (only when a teeth STL is loaded)
 function renderTeethPanel(){ const el=$('teethBody'); if(!el)return;
@@ -4097,12 +4142,75 @@ function renderTeethPanel(){ const el=$('teethBody'); if(!el)return;
   el.style.display='block'; const ld=$('teethLoadRow'); if(ld)ld.style.display='block';
   const jog=(a,lbl,ttl)=>`<div class="slrow"><span class="sl-l" title="${ttl}">${lbl}</span><div class="jog" id="jogTe_${a}" title="Drag" onpointerdown="teethJogStart(event,'${a}')"><span class="ja">&#8644;</span><span class="jv" id="jvTe_${a}">0</span></div><span class="numwrap"><input type="number" id="nbTe_${a}" class="numin" value="0" step="${a[0]==='r'?'0.5':'0.2'}" onchange="onTeethNum('${a}')"><span class="stp"><button type="button" onmousedown="holdStep('nbTe_${a}',1)" onmouseup="holdStop()" onmouseleave="holdStop()">&#9650;</button><button type="button" onmousedown="holdStep('nbTe_${a}',-1)" onmouseup="holdStop()" onmouseleave="holdStop()">&#9660;</button></span></span></div>`;
   el.innerHTML =
-    `<div class="sec-lbl">Teeth &mdash; rotation (deg)</div>`+jog('rx','X axis','Rotate teeth about X')+jog('ry','Y axis','Rotate teeth about Y')+jog('rz','Z axis','Rotate teeth about Z')+
-    `<div class="sec-lbl">Teeth &mdash; translation (mm)</div>`+jog('tx','X','Move teeth along X')+jog('ty','Y','Move teeth along Y')+jog('tz','Z','Move teeth along Z')+
-    `<div class="slrow"><span class="sl-l">Opacity</span><input type="range" id="slTeethOp" min="0" max="100" value="50" step="1" oninput="onTeethOp(this.value)"><span class="sl-v" id="svTeethOp">50%</span></div>`+
+    `<div class="sec-lbl">Auto-align (3 points)</div>`+
+    `<button class="btn-outline" id="btnTeethAlign" style="width:100%" onclick="startTeethAlign()">Align to the mandible with 3 points</button>`+
+    `<div class="note" id="teethAlignStat" style="padding-top:4px">Pick 3 matching landmarks on the mandible and on the teeth, the app snaps them together. You can still fine-tune by hand below.</div>`+
+    `<div class="sec-lbl">Manual rotation (deg)</div>`+jog('rx','X axis','Rotate teeth about X')+jog('ry','Y axis','Rotate teeth about Y')+jog('rz','Z axis','Rotate teeth about Z')+
+    `<div class="sec-lbl">Manual position (mm)</div>`+jog('tx','X','Move teeth along X')+jog('ty','Y','Move teeth along Y')+jog('tz','Z','Move teeth along Z')+
+    `<div class="slrow"><span class="sl-l">Opacity</span><input type="range" id="slTeethOp" min="0" max="100" value="100" step="1" oninput="onTeethOp(this.value)"><span class="sl-v" id="svTeethOp">100%</span></div>`+
     `<div class="slrow" style="gap:8px"><label class="grpctl-h" style="flex:0 0 auto"><input type="checkbox" id="teethShow" checked onchange="onTeethShow(this.checked)"> Show</label><button class="btn-outline" style="margin-left:auto;padding:3px 10px" onclick="resetTeeth()">&#10227; Reset</button><button class="btn-outline" style="padding:3px 10px" onclick="clearTeeth()">Remove</button></div>`;
   syncTeethUI();
 }
+// ── 3-point auto-align: rigid transform (Horn's quaternion method) that best maps the picked
+//    teeth landmarks onto the matching mandible landmarks, then written into P.teeth so the manual
+//    jogs and the session save keep working on top of it. Purely optional, no teeth means a no-op.
+function rigidFromPointPairs(src, dst){
+  const n=Math.min(src.length,dst.length); if(n<3) return null;
+  const cs=new THREE.Vector3(), cd=new THREE.Vector3();
+  for(let i=0;i<n;i++){ cs.add(src[i]); cd.add(dst[i]); } cs.multiplyScalar(1/n); cd.multiplyScalar(1/n);
+  let Sxx=0,Sxy=0,Sxz=0,Syx=0,Syy=0,Syz=0,Szx=0,Szy=0,Szz=0;
+  for(let i=0;i<n;i++){ const ax=src[i].x-cs.x,ay=src[i].y-cs.y,az=src[i].z-cs.z, bx=dst[i].x-cd.x,by=dst[i].y-cd.y,bz=dst[i].z-cd.z;
+    Sxx+=ax*bx; Sxy+=ax*by; Sxz+=ax*bz; Syx+=ay*bx; Syy+=ay*by; Syz+=ay*bz; Szx+=az*bx; Szy+=az*by; Szz+=az*bz; }
+  const N=[[Sxx+Syy+Szz, Syz-Szy,     Szx-Sxz,     Sxy-Syx],
+           [Syz-Szy,     Sxx-Syy-Szz, Sxy+Syx,     Szx+Sxz],
+           [Szx-Sxz,     Sxy+Syx,    -Sxx+Syy-Szz, Syz+Szy],
+           [Sxy-Syx,     Szx+Sxz,     Syz+Szy,    -Sxx-Syy+Szz]];
+  let shift=0; for(let i=0;i<4;i++){ let r=0; for(let j=0;j<4;j++)r+=Math.abs(N[i][j]); if(r>shift)shift=r; }
+  for(let i=0;i<4;i++)N[i][i]+=shift;                        // make it positive-definite so power iteration finds the LARGEST eigenvalue
+  let v=[1,0.31,0.21,0.11];
+  for(let it=0;it<160;it++){ const w=[0,0,0,0];
+    for(let i=0;i<4;i++){ let s=0; for(let j=0;j<4;j++)s+=N[i][j]*v[j]; w[i]=s; }
+    const L=Math.hypot(w[0],w[1],w[2],w[3]); if(L<1e-12) break; v=[w[0]/L,w[1]/L,w[2]/L,w[3]/L]; }
+  const q=new THREE.Quaternion(v[1],v[2],v[3],v[0]); if(q.lengthSq()<1e-9) return null; q.normalize();
+  const t=cd.clone().sub(cs.clone().applyQuaternion(q));
+  return {quaternion:q, position:t};
+}
+function setTeethAlignStat(msg){ const e=$('teethAlignStat'); if(e)e.textContent=msg; }
+function clearTeethMarks(){ teethAlignMarks.forEach(m=>disposeMesh(m)); teethAlignMarks=[]; }
+function addTeethMark(world, col){ const m=new THREE.Mesh(new THREE.SphereGeometry(Math.max(modelRadius*0.012,0.6),12,10), new THREE.MeshBasicMaterial({color:col,depthTest:false}));
+  m.position.copy(world); m.renderOrder=99; group.add(m); teethAlignMarks.push(m); invalidate(); }
+const TEETH_PAIR_COL=[0xff4d4d,0x5bd96a,0x5599ff];   // pair 1 red, 2 green, 3 blue
+function startTeethAlign(){ if(!teethMesh){ toast('Load a teeth STL first'); return; }
+  clearTeethMarks(); teethAlign={pairs:[], want:'mand'};
+  const b=$('btnTeethAlign'); if(b){ b.classList.add('picking'); b.textContent='Cancel alignment'; b.onclick=cancelTeethAlign; }
+  setTeethAlignStat('Point 1 of 3: click a landmark on the MANDIBLE.'); toast('3-point align: click a mandible landmark, then the same point on the teeth'); }
+function cancelTeethAlign(){ teethAlign=null; clearTeethMarks(); const b=$('btnTeethAlign'); if(b){ b.classList.remove('picking'); b.textContent='Align to the mandible with 3 points'; b.onclick=startTeethAlign; }
+  setTeethAlignStat('Pick 3 matching landmarks on the mandible and on the teeth, the app snaps them together. You can still fine-tune by hand below.'); }
+function pickTeethAlignAt(e){ if(!teethAlign||!teethMesh||!boneMesh) return;
+  const rc=pointerRay(e); const target=(teethAlign.want==='mand')?boneMesh:teethMesh;
+  const hit=rc.intersectObject(target,true)[0]; if(!hit){ toast('Click directly on the '+(teethAlign.want==='mand'?'mandible':'teeth')); return; }
+  const idx=teethAlign.pairs.length, col=TEETH_PAIR_COL[idx%3];
+  addTeethMark(hit.point.clone(), col);
+  if(teethAlign.want==='mand'){ teethAlign.pairs.push({mand:hit.point.clone()}); teethAlign.want='teeth';
+    setTeethAlignStat('Point '+(idx+1)+' of 3: now click the SAME point on the TEETH.'); }
+  else { teethAlign.pairs[idx-1].teeth=hit.point.clone(); teethAlign.want='mand';
+    if(teethAlign.pairs.length>=3){ applyTeethAlign(); }
+    else setTeethAlignStat('Point '+(teethAlign.pairs.length+1)+' of 3: click a landmark on the MANDIBLE.'); } }
+function applyTeethAlign(){ if(!teethAlign||!teethPivot||teethAlign.pairs.length<3) return;
+  modelPivot.updateMatrixWorld(true); teethMesh.updateMatrixWorld(true);
+  const src=[], dst=[];   // src = teeth points in teethMesh-local (geometry) frame; dst = mandible points in modelPivot-local frame
+  teethAlign.pairs.forEach(p=>{ if(!p.mand||!p.teeth)return; src.push(teethMesh.worldToLocal(p.teeth.clone())); dst.push(modelPivot.worldToLocal(p.mand.clone())); });
+  const r=(src.length>=3)?rigidFromPointPairs(src,dst):null;
+  cancelTeethAlign();
+  if(!r){ toast('Could not compute the alignment, pick 3 well-spread, non-aligned points'); return; }
+  const eul=new THREE.Euler().setFromQuaternion(r.quaternion,'XYZ');
+  P.teeth.rx=((eul.x/D2R)%360+360)%360; P.teeth.ry=((eul.y/D2R)%360+360)%360; P.teeth.rz=((eul.z/D2R)%360+360)%360;
+  P.teeth.tx=r.position.x; P.teeth.ty=r.position.y; P.teeth.tz=r.position.z;
+  applyTeeth(); syncTeethUI(); invalidate(); toast('Teeth aligned to the mandible (3 points). Fine-tune by hand if needed.'); }
+// SEGMENTATION module entry point (placeholder). The real DICOM segmentation environment, loading a
+// series, segmenting the tumour and the nerves, exporting meshes, is planned as a separate project;
+// this stub reserves the entry point so the section is predisposed.
+function openSegmentation(){ toast('Segmentation (DICOM) is in development, coming as a separate module.'); }
 function memorizeSegments(){      // store each segment's intrinsic shape (length + 2 cut normals, segment-local)
   segShapes=[]; if(!allPlanesSet())return;
   if(fibNodes.length!==planes.length) fibNodes=planes.map(pl=>pl.frame.P.clone());
@@ -5690,8 +5798,8 @@ function restoreState(st){
       P.marginL=(st.tumor.marginL!=null?st.tumor.marginL:4); P.marginR=(st.tumor.marginR!=null?st.tumor.marginR:4); }
     if(st.fibNodes&&st.fibNodes.length===planes.length){ fibNodes=st.fibNodes.map(a=>new THREE.Vector3(a[0],a[1],a[2])); }
     if(st.fibReconRot!=null){ P.fibReconRot=st.fibReconRot; if(typeof syncReconUI==='function')syncReconUI(); }
-    if(st.teeth){ P.teeth=Object.assign({rx:0,ry:0,rz:0,tx:0,ty:0,tz:0,show:true,op:0.5}, st.teeth);   // restore the alignment; applies once the teeth STL is (re)loaded, or immediately if already present
-      applyTeeth(); applyTeethVis(); if(teethMesh&&teethMesh.material){ teethMesh.material.opacity=P.teeth.op; teethMesh.material.transparent=P.teeth.op<0.999; } if(typeof syncTeethUI==='function')syncTeethUI(); if(typeof renderTeethPanel==='function')renderTeethPanel(); }
+    if(st.teeth){ P.teeth=Object.assign({rx:0,ry:0,rz:0,tx:0,ty:0,tz:0,show:true,op:1}, st.teeth);   // restore the alignment; applies once the teeth STL is (re)loaded, or immediately if already present
+      applyTeeth(); applyTeethVis(); applyTeethOpacity(); if(typeof syncTeethUI==='function')syncTeethUI(); if(typeof renderTeethPanel==='function')renderTeethPanel(); }
     if(st.guides){ const g=st.guides; if(g.szL)P.szL=g.szL; if(g.szR)P.szR=g.szR; P.modL=g.modL||''; P.modR=g.modR||'';
       if(g.gstand!=null)P.gstand=g.gstand; if(g.gpos)P.gpos=g.gpos; if(g.gface)P.gface=g.gface; if(g.gflip)P.gflip=g.gflip; }
     rebuildTumor();
@@ -5888,6 +5996,7 @@ function go(idx){
   // manipStart/dialGrab/refreshDial early-return → guides become un-movable/un-rotatable and the ring never shows
   // (the #9 bug on returning to M.guides). rotMode carrying over also flips a plain drag into a rotate.
   if(_stepChanged){ P.fibPick=null; P.fibHolePick=false; P.fibPaint=false; P.loftPick=null; P.tumorPick=null; rotMode=false;
+    if(teethAlign && typeof cancelTeethAlign==='function')cancelTeethAlign();   // leaving Orient cancels a half-done 3-point pick
     if(typeof clearFibHoleHL==='function')clearFibHoleHL(); if(typeof clearFibPaintPreview==='function')clearFibPaintPreview(); if(typeof clearLoftHL==='function')clearLoftHL();
     if(typeof setFibPickUI==='function')setFibPickUI(); if(typeof setFibHoleUI==='function')setFibHoleUI(); if(typeof setFibPaintUI==='function')setFibPaintUI(); }
   if(typeof setLoftPickUI==='function')setLoftPickUI();   // reflect connector face pick/assigned state on entry
