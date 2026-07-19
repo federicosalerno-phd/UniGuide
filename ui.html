@@ -298,8 +298,18 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
       <!-- page 0: drop zone -->
       <div id="p0wrap">
         <div id="p0inner">
-          <div class="p0note" style="max-width:560px;margin-bottom:4px">Load the patient&rsquo;s <b>mandible</b> (the bone to reconstruct) and the <b>donor fibula</b> (the bone the segments are harvested from) &mdash; <b>both are required</b> before you can continue. Both open in the <b>input/</b> folder. Then plan the resection planes, the fibula segments, and the cutting guide.</div>
-          <div class="p0note" id="p0hint" style="max-width:560px;margin-bottom:8px;color:var(--teal);font-weight:600">Both the mandible and the donor fibula are required.</div>
+          <div class="p0note" style="max-width:620px;margin-bottom:14px;font-size:14px">Start from a <b>CT scan</b> and segment it here, or load <b>STL files</b> you already have.</div>
+
+          <div style="max-width:620px;width:100%;margin-bottom:18px;padding:16px 18px;border:1px solid var(--teal);border-radius:10px;background:rgba(90,200,190,.08);display:flex;align-items:center;gap:14px">
+            <svg viewBox="0 0 24 24" width="30" height="30" style="fill:none;stroke:var(--teal);stroke-width:1.6;flex:none"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>
+            <div style="flex:1;min-width:0">
+              <div style="color:var(--t1);font-weight:700;font-size:15px">Start from a CT scan</div>
+              <div style="color:var(--t2);font-size:12px">Segment the mandible or the donor fibula from DICOM, automatically or by hand.</div>
+            </div>
+            <button class="btn-outline" onclick="openSegmentation()" style="border-color:var(--teal);color:var(--teal);white-space:nowrap">Open segmentation</button>
+          </div>
+
+          <div class="p0note" id="p0hint" style="max-width:620px;margin-bottom:8px;color:var(--t2)">Or load the STL files. Both the mandible and the donor fibula are required.</div>
           <div class="dz-row">
             <div class="dz" id="dzd" onclick="openModel()"
               ondragover="event.preventDefault();this.classList.add('dzover')"
@@ -322,13 +332,6 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <div class="dz-lbl">Load demo samples</div>
               <div class="dz-sub">mandible + fibula from input/</div>
             </div>
-          </div>
-          <!-- SEGMENTATION scaffold: entry point for the future DICOM segmentation module (built as a
-               separate project). Non-functional placeholder for now, so the section is predisposed. -->
-          <div class="p0note" style="max-width:560px;margin-top:14px;padding:10px 12px;border:1px dashed rgba(255,255,255,.16);border-radius:8px;color:var(--t2)">
-            <b style="color:var(--t1)">Only have the DICOM?</b>
-            Segment it here. Pick a head CT for the mandible or a leg CT for the donor fibula, and the bone is produced and loaded straight into the workflow.
-            <div style="margin-top:8px"><button class="btn-outline" onclick="openSegmentation()">Open segmentation</button></div>
           </div>
           <input type="file" id="fileIn" accept=".stl" style="display:none" onchange="onPickFile(event)">
           <div id="ftag" style="display:none"><div class="ftag">&#10003;<span id="fname">demo_mandible</span></div></div>
@@ -362,22 +365,22 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           <div style="display:flex;flex-direction:column;gap:14px">
             <div>
               <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1. DICOM folder <span style="opacity:.7">pick the patient folder, all subfolders are searched</span></div>
-              <div style="display:flex;gap:8px;align-items:center">
-                <button class="btn-outline" onclick="segPickFolder()">Choose folder</button>
-                <span id="segFolder" style="color:var(--t1);font-size:12px;word-break:break-all">not chosen</span>
-              </div>
+              <button class="btn-outline" style="width:100%" onclick="segPickFolder()">Choose folder</button>
+              <div id="segFolder" style="color:var(--t1);font-size:11px;margin-top:5px;word-break:break-all;opacity:.85">not chosen</div>
             </div>
 
             <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">2. Region</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <button id="segRegHead" class="btn-outline seg-seg-on" onclick="segSetRegion('head')">Head (mandible)</button>
-                <button id="segRegLeg" class="btn-outline" onclick="segSetRegion('leg')">Leg (fibula)</button>
-                <span id="segSideWrap" style="display:none;margin-left:8px">
-                  <span style="color:var(--t2);font-size:12px">donor side</span>
-                  <button id="segSideR" class="btn-outline seg-seg-on" onclick="segSetSide('R')" style="margin-left:6px">Right</button>
-                  <button id="segSideL" class="btn-outline" onclick="segSetSide('L')">Left</button>
-                </span>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">2. Region <span style="opacity:.7">head gives the mandible, leg gives the donor fibula</span></div>
+              <div style="display:flex;gap:8px">
+                <button id="segRegHead" class="btn-outline" style="flex:1" onclick="segSetRegion('head')">Head</button>
+                <button id="segRegLeg" class="btn-outline" style="flex:1" onclick="segSetRegion('leg')">Leg</button>
+              </div>
+              <div id="segSideWrap" style="display:none;margin-top:8px">
+                <div style="color:var(--t2);font-size:12px;margin-bottom:5px">Donor side</div>
+                <div style="display:flex;gap:8px">
+                  <button id="segSideR" class="btn-outline" style="flex:1" onclick="segSetSide('R')">Right</button>
+                  <button id="segSideL" class="btn-outline" style="flex:1" onclick="segSetSide('L')">Left</button>
+                </div>
               </div>
             </div>
 
@@ -386,11 +389,11 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <select id="segSeries" style="width:100%;background:#0f1215;color:var(--t1);border:1px solid rgba(255,255,255,.15);border-radius:7px;padding:8px"><option>choose a folder first</option></select>
             </div>
 
-            <div style="display:flex;gap:10px;align-items:center">
-              <button id="segStartBtn" class="btn-outline" onclick="segStart()" style="border-color:var(--teal);color:var(--teal)">Start segmentation</button>
-              <button class="btn-outline" onclick="segEdit()" title="Correct the automatic result, or draw by hand on the CT slices">Edit on slices</button>
-              <span id="segStatus" style="color:var(--t2);font-size:12px"></span>
+            <div style="display:flex;gap:8px">
+              <button id="segStartBtn" class="btn-outline" style="flex:1;border-color:var(--teal);color:var(--teal)" onclick="segStart()">Start segmentation</button>
+              <button class="btn-outline" style="flex:1" onclick="segEdit()" title="Correct the automatic result, or draw by hand on the CT slices">Edit on slices</button>
             </div>
+            <div id="segStatus" style="color:var(--t2);font-size:12px;min-height:15px"></div>
 
             <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:150px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
           </div>
@@ -4383,7 +4386,7 @@ function segSetup(force){
 function segSetRegion(r){
   segState.region=r;
   _segActive($('segRegHead'), r==='head'); _segActive($('segRegLeg'), r==='leg');
-  $('segSideWrap').style.display = r==='leg'?'inline':'none';
+  $('segSideWrap').style.display = r==='leg'?'block':'none';
   if(r==='leg') segSetSide(segState.side);
 }
 function segSetSide(s){ segState.side=s; _segActive($('segSideR'), s==='R'); _segActive($('segSideL'), s==='L'); }
