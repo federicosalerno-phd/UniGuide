@@ -326,8 +326,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           <!-- SEGMENTATION scaffold: entry point for the future DICOM segmentation module (built as a
                separate project). Non-functional placeholder for now, so the section is predisposed. -->
           <div class="p0note" style="max-width:560px;margin-top:14px;padding:10px 12px;border:1px dashed rgba(255,255,255,.16);border-radius:8px;color:var(--t2)">
-            <b style="color:var(--t1)">Segmentation (DICOM), in development.</b>
-            A built-in environment to load a DICOM series and segment structures directly here, the tumour and the nerves, then feed the resulting meshes straight into this workflow.
+            <b style="color:var(--t1)">Only have the DICOM?</b>
+            Segment it here. Pick a head CT for the mandible or a leg CT for the donor fibula, and the bone is produced and loaded straight into the workflow.
             <div style="margin-top:8px"><button class="btn-outline" onclick="openSegmentation()">Open segmentation</button></div>
           </div>
           <input type="file" id="fileIn" accept=".stl" style="display:none" onchange="onPickFile(event)">
@@ -337,6 +337,57 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <div class="scard" style="grid-column:1/-1"><div class="sc-l">Triangles</div><div class="sc-v" id="stTri">&mdash;</div><div class="sc-s">mesh faces</div></div>
               <div class="scard" style="grid-column:1/-1"><div class="sc-l">Bounding box</div><div class="sc-v" id="stBox" style="font-size:15px">&mdash;</div><div class="sc-s">width &times; depth &times; height (mm)</div></div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SEGMENTATION panel: load a DICOM series and segment it here, then feed the meshes
+           straight into the workflow. Heavy work runs in the seg env via the Python backend. -->
+      <div id="segModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.62);align-items:center;justify-content:center">
+        <div style="width:min(680px,92vw);max-height:88vh;overflow:auto;background:#15181c;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:20px 22px;box-shadow:0 18px 60px rgba(0,0,0,.6)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <b style="color:var(--t1);font-size:16px">Automatic segmentation from DICOM</b>
+            <div style="cursor:pointer;color:var(--t2);font-size:20px;line-height:1" onclick="closeSegmentation()">&times;</div>
+          </div>
+          <div class="p0note" style="margin:0 0 14px 0;color:var(--t2)">Choose a DICOM folder, pick the series and the region, then segment. The bone is produced in the CT frame and loaded straight in.</div>
+
+          <div id="segUnavail" style="display:none;color:#e6a23c;padding:10px 12px;border:1px dashed rgba(230,162,60,.4);border-radius:8px;margin-bottom:12px">
+            Segmentation environment not found. Set <b>UNIGUIDE_SEG_PYTHON</b> to the seg Python, or install it. Models download on first use.
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1 &middot; DICOM folder</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn-outline" onclick="segPickFolder()">Choose folder</button>
+                <span id="segFolder" style="color:var(--t1);font-size:12px;word-break:break-all">&mdash;</span>
+              </div>
+            </div>
+
+            <div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">2 &middot; Region</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <button id="segRegHead" class="btn-outline seg-seg-on" onclick="segSetRegion('head')">Head (mandible)</button>
+                <button id="segRegLeg" class="btn-outline" onclick="segSetRegion('leg')">Leg (fibula)</button>
+                <span id="segSideWrap" style="display:none;margin-left:8px">
+                  <span style="color:var(--t2);font-size:12px">donor side</span>
+                  <button id="segSideR" class="btn-outline seg-seg-on" onclick="segSetSide('R')" style="margin-left:6px">Right</button>
+                  <button id="segSideL" class="btn-outline" onclick="segSetSide('L')">Left</button>
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">3 &middot; Series</div>
+              <select id="segSeries" style="width:100%;background:#0f1215;color:var(--t1);border:1px solid rgba(255,255,255,.15);border-radius:7px;padding:8px"><option>choose a folder first</option></select>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:center">
+              <button id="segStartBtn" class="btn-outline" onclick="segStart()" style="border-color:var(--teal);color:var(--teal)">Start segmentation</button>
+              <span id="segStatus" style="color:var(--t2);font-size:12px">&mdash;</span>
+            </div>
+
+            <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:150px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
           </div>
         </div>
       </div>
@@ -4250,10 +4301,91 @@ function doTeethAlign(){ if(!teethAlign||!teethPivot) return; const nm=teethAlig
   P.teeth.rx=((eul.x/D2R)%360+360)%360; P.teeth.ry=((eul.y/D2R)%360+360)%360; P.teeth.rz=((eul.z/D2R)%360+360)%360;
   P.teeth.tx=r.position.x; P.teeth.ty=r.position.y; P.teeth.tz=r.position.z;
   applyTeeth(); syncTeethUI(); invalidate(); toast('Teeth aligned with '+n+' points'+(uneven?', used the first '+n+' of each':'')+'. Fine-tune by hand if needed.'); }
-// SEGMENTATION module entry point (placeholder). The real DICOM segmentation environment, loading a
-// series, segmenting the tumour and the nerves, exporting meshes, is planned as a separate project;
-// this stub reserves the entry point so the section is predisposed.
-function openSegmentation(){ toast('Segmentation (DICOM) is in development, coming as a separate module.'); }
+// ── SEGMENTATION (DICOM) ─────────────────────────────────────────────────────
+// Load a DICOM series and segment it in the dedicated seg environment (Python
+// backend + MOOSE). The produced bone is loaded straight into the workflow: the
+// head region gives the mandible, the leg region gives the donor fibula.
+let segState={folder:'',region:'head',side:'R',running:false};
+function _segActive(el,on){ if(!el)return; el.style.background=on?'rgba(90,200,190,.16)':''; el.style.borderColor=on?'var(--teal)':''; el.style.color=on?'var(--teal)':''; }
+function openSegmentation(){
+  if(!(B&&B.seg_status)){ toast('Segmentation needs the desktop app.'); return; }
+  B.seg_status(function(s){ let st={}; try{st=JSON.parse(s);}catch(e){} $('segUnavail').style.display=st.available?'none':'block'; });
+  segState={folder:'',region:'head',side:'R',running:false};
+  $('segFolder').textContent='—';
+  $('segSeries').innerHTML='<option>choose a folder first</option>';
+  $('segStatus').textContent='—';
+  $('segProg').style.display='none'; $('segProg').textContent='';
+  $('segStartBtn').disabled=false;
+  segSetRegion('head');
+  $('segModal').style.display='flex';
+}
+function closeSegmentation(){ $('segModal').style.display='none'; }
+function segSetRegion(r){
+  segState.region=r;
+  _segActive($('segRegHead'), r==='head'); _segActive($('segRegLeg'), r==='leg');
+  $('segSideWrap').style.display = r==='leg'?'inline':'none';
+  if(r==='leg') segSetSide(segState.side);
+}
+function segSetSide(s){ segState.side=s; _segActive($('segSideR'), s==='R'); _segActive($('segSideL'), s==='L'); }
+function segLog(t){ const p=$('segProg'); p.style.display='block'; p.textContent+=(p.textContent?'\n':'')+t; p.scrollTop=p.scrollHeight; }
+function segPickFolder(){
+  if(!(B&&B.seg_pick_dicom_dir))return;
+  B.seg_pick_dicom_dir(function(d){ if(!d)return; segState.folder=d; $('segFolder').textContent=d;
+    $('segSeries').innerHTML='<option>reading series…</option>'; $('segStatus').textContent='reading DICOM series…';
+    B.seg_list_series(d); });
+}
+function segStart(){
+  if(segState.running)return;
+  if(!segState.folder){ toast('Choose a DICOM folder first.'); return; }
+  const sel=$('segSeries'), sid=sel&&sel.value;
+  if(!sid||sid.indexOf('|')<0){ toast('Choose a series.'); return; }
+  segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='segmenting… (minutes)';
+  segLog('Segmentation started ('+segState.region+(segState.region==='leg'?' '+segState.side:'')+').');
+  B.seg_run(segState.folder, sid.split('|')[0], segState.region);
+}
+function onSegEvent(s){
+  let e={}; try{e=JSON.parse(s);}catch(err){return;}
+  if(e.cmd==='list-series'){
+    if(e.kind==='done'){
+      let r={}; try{r=JSON.parse(e.result);}catch(x){}
+      const sel=$('segSeries');
+      if(r.ok&&r.series&&r.series.length){
+        sel.innerHTML='';
+        r.series.forEach(function(se){ const o=document.createElement('option');
+          o.value=se.series_id+'|'+se.description;
+          o.textContent=se.slices+' sl · '+(se.description||se.modality||'series')+(se.thickness?(' · '+se.thickness+'mm'):'');
+          sel.appendChild(o); });
+        $('segStatus').textContent=r.series.length+' series found';
+      }else{ sel.innerHTML='<option>no series found</option>'; $('segStatus').textContent='no DICOM series here'; }
+    }else if(e.kind==='error'){ $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    return;
+  }
+  if(e.cmd==='segment'){
+    if(e.kind==='progress'){ if(/workflow|predict|download|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140)); }
+    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    else if(e.kind==='done'){
+      segState.running=false; $('segStartBtn').disabled=false;
+      let r={}; try{r=JSON.parse(e.result);}catch(x){}
+      if(!r||!r.ok){ $('segStatus').textContent='failed'; segLog('FAILED: '+((r&&r.error)||'no result')); return; }
+      $('segStatus').textContent='done, loading mesh…'; segLoadResult(r);
+    }
+  }
+}
+function segLoadResult(r){
+  const stls=r.stls||{};
+  const key = (r.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
+  const ingest = (r.region==='head') ? ingestModel : ingestFibula;
+  const path=stls[key];
+  if(!path){ segLog('No '+key+' produced. Parts: '+Object.keys(stls).join(', ')); $('segStatus').textContent='no '+key; return; }
+  B.seg_read_stl(path, function(s){
+    let d={}; try{d=JSON.parse(s);}catch(x){}
+    if(d.error){ segLog('Load failed: '+d.error); return; }
+    ingest(d.positions, key);
+    const others=Object.keys(stls).filter(function(k){return k!==key;});
+    segLog('Loaded '+key+'. Also produced: '+(others.join(', ')||'none'));
+    closeSegmentation(); toast(key+' segmented and loaded.');
+  });
+}
 function memorizeSegments(){      // store each segment's intrinsic shape (length + 2 cut normals, segment-local)
   segShapes=[]; if(!allPlanesSet())return;
   if(fibNodes.length!==planes.length) fibNodes=planes.map(pl=>pl.frame.P.clone());
@@ -6552,6 +6684,7 @@ function initBridge(){
   new QWebChannel(qt.webChannelTransport,function(ch){
     B=ch.objects.backend;
     if(B&&B.app_info){ B.app_info(function(s){ try{const i=JSON.parse(s); setSt(i.name+' '+i.version+' \u00b7 no model','');}catch(e){} }); }
+    if(B&&B.segEvent&&B.segEvent.connect){ B.segEvent.connect(onSegEvent); }
   });
 }
 

@@ -10,6 +10,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 datas = [
     ('ui.html', '.'),
     ('guides.json', '.'),
+    ('segmentation.py', '.'),      # DICOM segmentation driver, run by the seg env as a subprocess
     ('libs', 'libs'),
     ('modules', 'modules'),
     ('input', 'input'),

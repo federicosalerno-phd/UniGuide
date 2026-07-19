@@ -90,14 +90,14 @@ try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWebEngineCore import QWebEngineSettings          # moved module in Qt6
     from PyQt6.QtWebChannel import QWebChannel
-    from PyQt6.QtCore import QObject, pyqtSlot, pyqtSignal, QUrl, Qt
+    from PyQt6.QtCore import QObject, pyqtSlot, pyqtSignal, QUrl, Qt, QProcess, QProcessEnvironment
     from PyQt6.QtGui import QColor
     USE_QT6 = True
 except Exception:
     from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QFileDialog
     from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEngineSettings
     from PyQt5.QtWebChannel import QWebChannel
-    from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QUrl, Qt
+    from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QUrl, Qt, QProcess, QProcessEnvironment
     from PyQt5.QtGui import QColor
     USE_QT6 = False
 
@@ -180,6 +180,7 @@ class Backend(QObject):
     """
 
     modelLoaded = pyqtSignal(str)   # emitted with the loaded model JSON
+    segEvent = pyqtSignal(str)      # segmentation progress/done/error events (JSON)
 
     @staticmethod
     def _input_dir():
@@ -189,6 +190,7 @@ class Backend(QObject):
         super().__init__()
         d = self._input_dir()
         self._last_dir = str(d if d.exists() else Path.home())
+        self._seg_procs = []        # keep QProcess refs alive while running
 
     @pyqtSlot(result=str)
     def app_info(self):
@@ -264,6 +266,114 @@ class Backend(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
         return json.dumps({"name": Path(path).name, "positions": pos, "count": len(pos) // 9})
+
+    # -------------------------------------------------------------- segmentation
+    # The heavy DICOM segmentation (MOOSE / nnU-Net / torch) lives in a dedicated
+    # Python environment and is driven through ``segmentation.py`` as a subprocess,
+    # so the app itself stays light. Long-running commands run async via QProcess and
+    # report back through the ``segEvent`` signal; the UI shows one unified panel.
+
+    def _seg_python(self):
+        """Locate the segmentation environment's Python interpreter.
+
+        Order: ``UNIGUIDE_SEG_PYTHON`` env var, a ``seg_python.txt`` pointer saved in
+        the user-data dir, then a couple of common dev locations. Empty if none found.
+        """
+        cand = os.environ.get("UNIGUIDE_SEG_PYTHON", "").strip()
+        if cand and Path(cand).exists():
+            return cand
+        try:
+            ptr = _user_data_dir() / "seg_python.txt"
+            if ptr.exists():
+                t = ptr.read_text(encoding="utf-8").strip()
+                if t and Path(t).exists():
+                    return t
+        except Exception:
+            pass
+        for c in (r"D:/uniguide_seg/Scripts/python.exe",
+                  str(Path.home() / "uniguide_seg" / "Scripts" / "python.exe")):
+            if Path(c).exists():
+                return c
+        return ""
+
+    def _seg_script(self):
+        return str(_res_dir() / "segmentation.py")
+
+    @pyqtSlot(result=str)
+    def seg_status(self):
+        """Report whether the segmentation environment is ready."""
+        py = self._seg_python()
+        return json.dumps({"available": bool(py) and Path(self._seg_script()).exists(),
+                           "python": py, "script": self._seg_script()})
+
+    @pyqtSlot(result=str)
+    def seg_pick_dicom_dir(self):
+        """Native dialog to choose a folder that holds a DICOM series."""
+        d = QFileDialog.getExistingDirectory(None, "Choose the DICOM folder", self._start_dir())
+        if d:
+            self._last_dir = d
+        return d or ""
+
+    def _run_seg_async(self, args, cmd_tag):
+        """Start segmentation.py <args> in the seg env; stream events over segEvent."""
+        py = self._seg_python()
+        if not py:
+            self.segEvent.emit(json.dumps({"kind": "error", "cmd": cmd_tag,
+                                           "error": "Segmentation environment not configured"}))
+            return
+        proc = QProcess()
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        proc.setProcessEnvironment(env)
+        buf = {"out": b""}
+
+        def on_out():
+            buf["out"] += bytes(proc.readAllStandardOutput())
+
+        def on_err():
+            txt = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+            for ln in txt.replace("\r", "\n").splitlines():
+                ln = ln.strip()
+                if ln:
+                    self.segEvent.emit(json.dumps({"kind": "progress", "cmd": cmd_tag, "text": ln}))
+
+        def on_fin(code, _status):
+            out = buf["out"].decode("utf-8", "replace").strip()
+            line = out.splitlines()[-1] if out else ""
+            self.segEvent.emit(json.dumps({"kind": "done", "cmd": cmd_tag,
+                                           "code": int(code), "result": line}))
+            if proc in self._seg_procs:
+                self._seg_procs.remove(proc)
+
+        proc.readyReadStandardOutput.connect(on_out)
+        proc.readyReadStandardError.connect(on_err)
+        proc.finished.connect(on_fin)
+        self._seg_procs.append(proc)
+        proc.start(py, [self._seg_script()] + list(args))
+
+    @pyqtSlot(str)
+    def seg_list_series(self, folder):
+        """List DICOM series in a folder (async; result via segEvent, cmd 'list-series')."""
+        self._run_seg_async(["list-series", folder], "list-series")
+
+    @pyqtSlot(str, str, str)
+    def seg_run(self, folder, series_id, region):
+        """Segment one series for a region (async; result via segEvent, cmd 'segment')."""
+        work = str(_user_data_dir() / "seg_work")
+        self._run_seg_async(["segment", folder, series_id, region, work], "segment")
+
+    @pyqtSlot(str, result=str)
+    def seg_read_stl(self, path):
+        """Parse an STL the segmentation produced (absolute path in the work dir)."""
+        p = Path(path)
+        if not p.exists():
+            return json.dumps({"error": "not found: " + path})
+        try:
+            pos = _parse_stl(str(p))
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+        return json.dumps({"name": p.name, "positions": pos, "count": len(pos) // 9})
 
     @pyqtSlot(str, str, result=str)
     def save_stl(self, suggested_name, stl_text):
