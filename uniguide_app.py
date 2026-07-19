@@ -191,6 +191,7 @@ class Backend(QObject):
         d = self._input_dir()
         self._last_dir = str(d if d.exists() else Path.home())
         self._seg_procs = []        # keep QProcess refs alive while running
+        self._edit = None           # in-memory mask-editing session (bundle loaded)
 
     @pyqtSlot(result=str)
     def app_info(self):
@@ -417,6 +418,91 @@ class Backend(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
         return json.dumps({"name": p.name, "positions": pos, "count": len(pos) // 9})
+
+    # ------------------------------------------------------------ mask editing
+    # Hand-correct or draw the segmentation on axial/coronal/sagittal slices. The CT
+    # and the label mask live here as numpy arrays (loaded from the seg bundle); the
+    # browser shows slices and paints, edits come back, then we re-mesh via the seg env.
+
+    @staticmethod
+    def _slice(arr, axis, idx):
+        if axis == 0:
+            return arr[idx]
+        if axis == 1:
+            return arr[:, idx, :]
+        return arr[:, :, idx]
+
+    @pyqtSlot(str, result=str)
+    def edit_load(self, bundle_path):
+        """Load a segmentation bundle (CT + label mask + geometry) for editing."""
+        import numpy as np
+        p = Path(bundle_path)
+        if not p.exists():
+            return json.dumps({"ok": False, "error": "bundle not found: " + bundle_path})
+        try:
+            d = np.load(str(p), allow_pickle=True)
+            self._edit = {"path": str(p), "ct": d["ct"], "labels": np.ascontiguousarray(d["labels"]),
+                          "spacing": d["spacing"], "names": json.loads(str(d["names"]))}
+        except Exception as e:
+            return json.dumps({"ok": False, "error": str(e)})
+        nz, ny, nx = self._edit["ct"].shape
+        return json.dumps({"ok": True, "nz": int(nz), "ny": int(ny), "nx": int(nx),
+                           "names": self._edit["names"]})
+
+    @pyqtSlot(int, int, float, float, result=str)
+    def edit_ct_slice(self, axis, idx, level, width):
+        """Return one CT slice, windowed to grayscale, as a PNG data URL."""
+        import numpy as np, io, base64
+        from PIL import Image
+        if not self._edit:
+            return ""
+        sl = self._slice(self._edit["ct"], axis, int(idx)).astype(np.float32)
+        lo, hi = level - width / 2.0, level + width / 2.0
+        g = np.clip((sl - lo) / max(1e-3, hi - lo), 0, 1) * 255.0
+        buf = io.BytesIO()
+        Image.fromarray(g.astype(np.uint8), mode="L").save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    @pyqtSlot(int, int, result=str)
+    def edit_mask_slice(self, axis, idx):
+        """Return one label-mask slice as raw base64 uint8 (the UI colours it)."""
+        import numpy as np, base64
+        if not self._edit:
+            return json.dumps({"ok": False})
+        sl = np.ascontiguousarray(self._slice(self._edit["labels"], axis, int(idx)).astype(np.uint8))
+        h, w = sl.shape
+        return json.dumps({"ok": True, "h": int(h), "w": int(w),
+                           "data": base64.b64encode(sl.tobytes()).decode()})
+
+    @pyqtSlot(int, int, str, result=str)
+    def edit_set_slice(self, axis, idx, b64):
+        """Write an edited mask slice back into the volume."""
+        import numpy as np, base64
+        if not self._edit:
+            return json.dumps({"ok": False})
+        lab = self._edit["labels"]
+        idx = int(idx)
+        shape = self._slice(lab, axis, idx).shape
+        arr = np.frombuffer(base64.b64decode(b64), dtype=np.uint8).reshape(shape)
+        if axis == 0:
+            lab[idx] = arr
+        elif axis == 1:
+            lab[:, idx, :] = arr
+        else:
+            lab[:, :, idx] = arr
+        return json.dumps({"ok": True})
+
+    @pyqtSlot(int, str)
+    def edit_remesh(self, label, out_dir):
+        """Persist the edited mask and re-mesh one label via the seg env (async, cmd 'remesh')."""
+        import numpy as np
+        if not self._edit:
+            self.segEvent.emit(json.dumps({"kind": "error", "cmd": "remesh", "error": "no edit session"}))
+            return
+        bundle = self._edit["path"]
+        np.save(str(Path(bundle).parent / "labels_edited.npy"), self._edit["labels"])
+        out = str(Path(out_dir or str(Path(bundle).parent)) / ("edited_%d.stl" % int(label)))
+        self._spawn(self._seg_python(), [self._seg_script(), "remesh", bundle, str(int(label)), out], "remesh")
 
     @pyqtSlot(str, str, result=str)
     def save_stl(self, suggested_name, stl_text):

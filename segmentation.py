@@ -239,6 +239,27 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
 
 # ------------------------------------------------------------------- orchestration
 
+def save_edit_bundle(ct_nifti, label_nii, cfg, out_dir):
+    """Save a compact numpy bundle (CT + label mask + geometry + names) so the app can
+    hand-edit the mask slice by slice without needing SimpleITK, then re-mesh."""
+    os.makedirs(out_dir, exist_ok=True)
+    ct_img = sitk.ReadImage(ct_nifti)
+    lb_img = sitk.ReadImage(label_nii)
+    ct = sitk.GetArrayFromImage(ct_img).astype(np.int16)          # (z,y,x)
+    labels = sitk.GetArrayFromImage(lb_img).astype(np.uint8)
+    path = os.path.join(out_dir, "bundle.npz")
+    np.savez_compressed(
+        path,
+        ct=ct, labels=labels,
+        spacing=np.array(ct_img.GetSpacing(), dtype=np.float64),
+        origin=np.array(ct_img.GetOrigin(), dtype=np.float64),
+        direction=np.array(ct_img.GetDirection(), dtype=np.float64),
+        names=json.dumps({int(k): v for k, v in cfg["labels"].items()}),
+    )
+    log("edit bundle:", path)
+    return path
+
+
 def segment(dicom_folder, series_id, region, work_dir):
     if region not in REGIONS:
         raise ValueError("unknown region %r (expected head|leg)" % region)
@@ -247,7 +268,30 @@ def segment(dicom_folder, series_id, region, work_dir):
     nifti = series_to_nifti(dicom_folder, series_id, os.path.join(work_dir, "input", "CT_%s.nii.gz" % region))
     label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
     stls = labels_to_stls(label_nii, cfg, os.path.join(work_dir, "stl"))
-    return {"ok": True, "region": region, "label_nii": label_nii, "stls": stls}
+    bundle = save_edit_bundle(nifti, label_nii, cfg, os.path.join(work_dir, "edit"))
+    return {"ok": True, "region": region, "label_nii": label_nii, "stls": stls, "bundle": bundle}
+
+
+def remesh(bundle_path, label_value, out_stl, largest_only=True, smooth_iter=10):
+    """Re-mesh one label from a (possibly hand-edited) bundle into an STL in the CT frame.
+    The edited mask, if present next to the bundle as ``labels_edited.npy``, wins."""
+    b = np.load(bundle_path, allow_pickle=True)
+    edited = os.path.join(os.path.dirname(bundle_path), "labels_edited.npy")
+    labels = np.load(edited) if os.path.exists(edited) else b["labels"]
+    # rebuild a minimal SimpleITK image just to carry the geometry for mask_to_mesh
+    img = sitk.GetImageFromArray(labels)
+    img.SetSpacing(tuple(float(x) for x in b["spacing"]))
+    img.SetOrigin(tuple(float(x) for x in b["origin"]))
+    img.SetDirection(tuple(float(x) for x in b["direction"]))
+    mask = (labels == int(label_value))
+    mask = clean_components(mask, largest_only=largest_only)
+    mesh = mask_to_mesh(mask, img, smooth_iter=smooth_iter)
+    if mesh is None:
+        raise RuntimeError("label %s empty after edit" % label_value)
+    os.makedirs(os.path.dirname(out_stl) or ".", exist_ok=True)
+    mesh.export(out_stl)
+    log("remesh label", label_value, "->", out_stl, len(mesh.vertices), "verts")
+    return {"ok": True, "stl": out_stl, "verts": int(len(mesh.vertices))}
 
 
 # ---------------------------------------------------------------------------- CLI
@@ -262,6 +306,10 @@ def main(argv):
             result = {"ok": True, "series": list_series(argv[2])}
         elif cmd == "segment":
             result = segment(argv[2], argv[3], argv[4], argv[5])
+        elif cmd == "remesh":
+            # remesh <bundle.npz> <label_value> <out.stl> [keep-largest|keep-all]
+            largest = (len(argv) <= 5) or (argv[5] != "keep-all")
+            result = remesh(argv[2], int(argv[3]), argv[4], largest_only=largest)
         else:
             result = {"ok": False, "error": "unknown command %r" % cmd}
     except Exception as e:
