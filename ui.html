@@ -361,7 +361,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
 
           <div style="display:flex;flex-direction:column;gap:14px">
             <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1 &middot; DICOM folder</div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1 &middot; DICOM folder <span style="opacity:.7">&mdash; pick the patient folder, or any folder above the DICOM, all subfolders are searched</span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <button class="btn-outline" onclick="segPickFolder()">Choose folder</button>
                 <span id="segFolder" style="color:var(--t1);font-size:12px;word-break:break-all">&mdash;</span>
@@ -4349,12 +4349,12 @@ function doTeethAlign(){ if(!teethAlign||!teethPivot) return; const nm=teethAlig
 // Load a DICOM series and segment it in the dedicated seg environment (Python
 // backend + MOOSE). The produced bone is loaded straight into the workflow: the
 // head region gives the mandible, the leg region gives the donor fibula.
-let segState={folder:'',region:'head',side:'R',running:false};
+let segState={folder:'',region:'head',side:'R',running:false,series:[]};
 function _segActive(el,on){ if(!el)return; el.style.background=on?'rgba(90,200,190,.16)':''; el.style.borderColor=on?'var(--teal)':''; el.style.color=on?'var(--teal)':''; }
 function openSegmentation(){
   if(!(B&&B.seg_status)){ toast('Segmentation needs the desktop app.'); return; }
   B.seg_status(function(s){ let st={}; try{st=JSON.parse(s);}catch(e){} $('segUnavail').style.display=st.available?'none':'block'; });
-  segState={folder:'',region:'head',side:'R',running:false};
+  segState={folder:'',region:'head',side:'R',running:false,series:[]};
   $('segFolder').textContent='—';
   $('segSeries').innerHTML='<option>choose a folder first</option>';
   $('segStatus').textContent='—';
@@ -4386,12 +4386,11 @@ function segPickFolder(){
 }
 function segStart(){
   if(segState.running)return;
-  if(!segState.folder){ toast('Choose a DICOM folder first.'); return; }
-  const sel=$('segSeries'), sid=sel&&sel.value;
-  if(!sid||sid.indexOf('|')<0){ toast('Choose a series.'); return; }
+  const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
+  if(!s){ toast('Choose a series first.'); return; }
   segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='segmenting… (minutes)';
-  segLog('Segmentation started ('+segState.region+(segState.region==='leg'?' '+segState.side:'')+').');
-  B.seg_run(segState.folder, sid.split('|')[0], segState.region);
+  segLog('Segmentation started ('+segState.region+(segState.region==='leg'?' '+segState.side:'')+') on '+(s.description||'series')+'.');
+  B.seg_run(s.folder, s.series_id, segState.region);
 }
 function onSegEvent(s){
   let e={}; try{e=JSON.parse(s);}catch(err){return;}
@@ -4423,17 +4422,18 @@ function onSegEvent(s){
     return;
   }
   if(e.cmd==='list-series'){
+    if(e.kind==='progress'){ if(/scanning:/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); return; }
     if(e.kind==='done'){
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
       const sel=$('segSeries');
       if(r.ok&&r.series&&r.series.length){
-        sel.innerHTML='';
-        r.series.forEach(function(se){ const o=document.createElement('option');
-          o.value=se.series_id+'|'+se.description;
-          o.textContent=se.slices+' sl · '+(se.description||se.modality||'series')+(se.thickness?(' · '+se.thickness+'mm'):'');
+        segState.series=r.series; sel.innerHTML='';
+        r.series.forEach(function(se,i){ const o=document.createElement('option'); o.value=String(i);
+          const loc=(se.rel&&se.rel!=='.')?('   ['+se.rel+']'):'';
+          o.textContent=se.slices+' sl · '+(se.description||se.modality||'series')+(se.thickness?(' · '+se.thickness+'mm'):'')+loc;
           sel.appendChild(o); });
-        $('segStatus').textContent=r.series.length+' series found';
-      }else{ sel.innerHTML='<option>no series found</option>'; $('segStatus').textContent='no DICOM series here'; }
+        $('segStatus').textContent=r.series.length+' series found — pick one';
+      }else{ segState.series=[]; sel.innerHTML='<option>no DICOM series found</option>'; $('segStatus').textContent='no DICOM found under this folder'; }
     }else if(e.kind==='error'){ $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     return;
   }

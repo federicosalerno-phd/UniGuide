@@ -72,30 +72,58 @@ def log(*a):
 
 # ------------------------------------------------------------------- DICOM handling
 
-def list_series(folder):
-    """Enumerate the DICOM series in a folder, richest (most slices) first."""
+def list_series(root):
+    """Enumerate DICOM series ANYWHERE under ``root`` (recursively), richest first.
+
+    The user can point at the patient folder, or any folder above the DICOM, and we find
+    every series in the subtree. Each entry carries the exact ``folder`` it lives in so the
+    caller can read it, plus a ``rel`` path shown in the UI so the user knows what it is.
+    """
     reader = sitk.ImageSeriesReader()
-    ids = reader.GetGDCMSeriesIDs(folder)
-    out = []
-    for sid in ids:
-        files = reader.GetGDCMSeriesFileNames(folder, sid)
-        fr = sitk.ImageFileReader()
-        fr.SetFileName(files[0])
-        fr.ReadImageInformation()
-
-        def meta(k):
+    out, seen = [], set()
+    for dirpath, _dirs, files in os.walk(root):
+        if not files:
+            continue
+        try:
+            ids = reader.GetGDCMSeriesIDs(dirpath)
+        except Exception:
+            continue
+        if not ids:
+            continue
+        try:
+            rel = os.path.relpath(dirpath, root)
+        except Exception:
+            rel = dirpath
+        log("scanning:", rel)
+        for sid in ids:
+            if (dirpath, sid) in seen:
+                continue
+            seen.add((dirpath, sid))
+            fnames = reader.GetGDCMSeriesFileNames(dirpath, sid)
+            if not fnames:
+                continue
+            fr = sitk.ImageFileReader()
+            fr.SetFileName(fnames[0])
             try:
-                return fr.GetMetaData(k).strip()
+                fr.ReadImageInformation()
             except Exception:
-                return ""
+                continue
 
-        out.append({
-            "series_id": sid,
-            "description": meta("0008|103e"),
-            "modality": meta("0008|0060"),
-            "thickness": meta("0018|0050"),
-            "slices": len(files),
-        })
+            def meta(k):
+                try:
+                    return fr.GetMetaData(k).strip()
+                except Exception:
+                    return ""
+
+            out.append({
+                "series_id": sid,
+                "folder": dirpath,
+                "rel": rel,
+                "description": meta("0008|103e"),
+                "modality": meta("0008|0060"),
+                "thickness": meta("0018|0050"),
+                "slices": len(fnames),
+            })
     out.sort(key=lambda r: -r["slices"])
     return out
 
