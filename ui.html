@@ -300,13 +300,15 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         <div id="p0inner">
           <div class="p0note" style="max-width:620px;margin-bottom:14px;font-size:14px">Start from a <b>CT scan</b> and segment it here, or load <b>STL files</b> you already have.</div>
 
-          <div style="max-width:620px;width:100%;margin-bottom:18px;padding:16px 18px;border:1px solid var(--teal);border-radius:10px;background:rgba(90,200,190,.08);display:flex;align-items:center;gap:14px">
-            <svg viewBox="0 0 24 24" width="30" height="30" style="fill:none;stroke:var(--teal);stroke-width:1.6;flex:none"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>
-            <div style="flex:1;min-width:0">
-              <div style="color:var(--t1);font-weight:700;font-size:15px">Start from a CT scan</div>
-              <div style="color:var(--t2);font-size:12px">Segment the mandible or the donor fibula from DICOM, automatically or by hand.</div>
+          <div style="max-width:620px;width:100%;margin-bottom:18px;padding:18px;border:1px solid var(--teal);border-radius:10px;background:rgba(90,200,190,.08)">
+            <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+              <svg viewBox="0 0 24 24" width="30" height="30" style="fill:none;stroke:var(--teal);stroke-width:1.6;flex:none"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>
+              <div>
+                <div style="color:var(--t1);font-weight:700;font-size:16px">Start from a CT scan</div>
+                <div style="color:var(--t2);font-size:12.5px;margin-top:2px">Segment the mandible or the donor fibula from DICOM, automatically or by hand.</div>
+              </div>
             </div>
-            <button class="btn-outline" onclick="openSegmentation()" style="border-color:var(--teal);color:var(--teal);white-space:nowrap">Open segmentation</button>
+            <button class="btn-outline" style="width:100%;border-color:var(--teal);color:var(--teal)" onclick="openSegmentation()">Open segmentation</button>
           </div>
 
           <div class="p0note" id="p0hint" style="max-width:620px;margin-bottom:8px;color:var(--t2)">Or load the STL files. Both the mandible and the donor fibula are required.</div>
@@ -344,6 +346,12 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         </div>
       </div>
 
+      <style>
+        @keyframes segspin{to{transform:rotate(360deg)}}
+        .segspin{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.18);border-top-color:var(--teal);display:inline-block;animation:segspin .8s linear infinite;flex:none}
+        @keyframes segindet{0%{margin-left:-35%}100%{margin-left:100%}}
+        .segbar-indet{width:35%!important;animation:segindet 1.1s ease-in-out infinite}
+      </style>
       <!-- SEGMENTATION panel: load a DICOM series and segment it here, then feed the meshes
            straight into the workflow. Heavy work runs in the seg env via the Python backend. -->
       <div id="segModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.62);align-items:center;justify-content:center">
@@ -393,9 +401,13 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <button id="segStartBtn" class="btn-outline" style="flex:1;border-color:var(--teal);color:var(--teal)" onclick="segStart()">Start segmentation</button>
               <button class="btn-outline" style="flex:1" onclick="segEdit()" title="Correct the automatic result, or draw by hand on the CT slices">Edit on slices</button>
             </div>
-            <div id="segStatus" style="color:var(--t2);font-size:12px;min-height:15px"></div>
+            <div style="display:flex;align-items:center;gap:8px;min-height:16px">
+              <span id="segSpin" class="segspin" style="display:none"></span>
+              <span id="segStatus" style="color:var(--t2);font-size:12px"></span>
+            </div>
+            <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal);transition:width .3s"></div></div>
 
-            <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:150px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
+            <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:120px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
           </div>
         </div>
       </div>
@@ -4391,17 +4403,23 @@ function segSetRegion(r){
 }
 function segSetSide(s){ segState.side=s; _segActive($('segSideR'), s==='R'); _segActive($('segSideL'), s==='L'); }
 function segLog(t){ const p=$('segProg'); p.style.display='block'; p.textContent+=(p.textContent?'\n':'')+t; p.scrollTop=p.scrollHeight; }
+function segBusy(on){ $('segSpin').style.display=on?'inline-block':'none'; if(!on) segBar(-1); }
+function segBar(pct){ const wrap=$('segBarWrap'), bar=$('segBar');
+  if(pct===null){ wrap.style.display='block'; bar.classList.add('segbar-indet'); bar.style.width='35%'; }
+  else if(pct<0){ wrap.style.display='none'; bar.classList.remove('segbar-indet'); }
+  else { wrap.style.display='block'; bar.classList.remove('segbar-indet'); bar.style.width=Math.max(2,pct)+'%'; } }
 function segPickFolder(){
   if(!(B&&B.seg_pick_dicom_dir))return;
   B.seg_pick_dicom_dir(function(d){ if(!d)return; segState.folder=d; $('segFolder').textContent=d;
-    $('segSeries').innerHTML='<option>reading series…</option>'; $('segStatus').textContent='reading DICOM series…';
-    B.seg_list_series(d); });
+    $('segSeries').innerHTML='<option>reading series</option>'; $('segStatus').textContent='reading DICOM series';
+    segBusy(true); segBar(null); B.seg_list_series(d); });
 }
 function segStart(){
   if(segState.running)return;
   const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
   if(!s){ toast('Choose a series first.'); return; }
-  segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='segmenting… (minutes)';
+  segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='preparing';
+  segBusy(true); segBar(null);
   segLog('Segmentation started ('+segState.region+(segState.region==='leg'?' '+segState.side:'')+') on '+(s.description||'series')+'.');
   B.seg_run(s.folder, s.series_id, segState.region);
 }
@@ -4410,6 +4428,7 @@ function segEdit(){
   const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
   if(!s){ toast('Pick a series first, then edit.'); return; }
   $('segStatus').textContent='preparing the CT for drawing, copying locally';
+  segBusy(true); segBar(null);
   segLog('Preparing '+(s.description||'series')+' for manual drawing.');
   B.seg_ctbundle(s.folder, s.series_id);
 }
@@ -4443,23 +4462,24 @@ function onSegEvent(s){
     return;
   }
   if(e.cmd==='ctbundle'){
-    if(e.kind==='progress'){ if(/copying:|scanning:|nifti|bundle/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); }
-    else if(e.kind==='error'){ $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
-    else if(e.kind==='done'){ let r={}; try{r=JSON.parse(e.result);}catch(x){}
+    if(e.kind==='progress'){ if(/copying:/i.test(e.text)) $('segStatus').textContent='copying the scan locally'; else if(/nifti|bundle/i.test(e.text)) $('segStatus').textContent='preparing the slices'; }
+    else if(e.kind==='error'){ segBusy(false); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    else if(e.kind==='done'){ segBusy(false); let r={}; try{r=JSON.parse(e.result);}catch(x){}
       if(r&&r.ok&&r.bundle){ window.__segBundle=r.bundle; $('segStatus').textContent='ready, opening editor'; openEditor(r.bundle); }
       else { $('segStatus').textContent='failed'; segLog('MANUAL PREP FAILED: '+((r&&r.error)||'')); } }
     return;
   }
   if(e.cmd==='list-series'){
     if(e.kind==='progress'){ if(/scanning:|copying:/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); return; }
+    segBusy(false);
     if(e.kind==='done'){
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
       const sel=$('segSeries');
       if(r.ok&&r.series&&r.series.length){
         segState.series=r.series; sel.innerHTML='';
         r.series.forEach(function(se,i){ const o=document.createElement('option'); o.value=String(i);
-          const loc=(se.rel&&se.rel!=='.')?('  in '+se.rel):'';
-          o.textContent=se.slices+' sl, '+(se.description||se.modality||'series')+(se.thickness?(', '+se.thickness+'mm'):'')+loc;
+          let thk=''; if(se.thickness){ const t=parseFloat(se.thickness); thk=', '+(isNaN(t)?se.thickness:t.toFixed(1))+' mm'; }
+          o.textContent=(se.description||se.modality||'series')+', '+se.slices+' slices'+thk;
           sel.appendChild(o); });
         $('segStatus').textContent=r.series.length+' series found, pick one';
       }else{ segState.series=[]; sel.innerHTML='<option>no DICOM series found</option>'; $('segStatus').textContent='no DICOM found under this folder'; }
@@ -4469,16 +4489,17 @@ function onSegEvent(s){
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
       const m=e.text.match(/(\d+)\/(\d+)\s*\[/);
-      if(m){ $('segStatus').textContent='segmenting '+Math.round(100*(+m[1])/(+m[2]))+'%'; return; }
-      if(/copying:|scanning:/i.test(e.text)){ $('segStatus').textContent=e.text.slice(0,60); return; }
-      if(/workflow|predict|download|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140));
+      if(m){ const pct=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='segmenting '+pct+'%'; segBar(pct); return; }
+      if(/copying:/i.test(e.text)){ $('segStatus').textContent='copying the scan locally: '+e.text.replace(/.*copying:/i,'').trim(); return; }
+      if(/predict|Predicting/i.test(e.text)){ $('segStatus').textContent='segmenting, warming up'; return; }
+      if(/workflow|download|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140));
     }
-    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
-      segState.running=false; $('segStartBtn').disabled=false;
+      segState.running=false; $('segStartBtn').disabled=false; segBusy(false);
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
       if(!r||!r.ok){ $('segStatus').textContent='failed'; segLog('FAILED: '+((r&&r.error)||'no result')); return; }
-      $('segStatus').textContent='done, loading mesh…'; segLoadResult(r);
+      $('segStatus').textContent='done, loading mesh'; segLoadResult(r);
     }
   }
 }

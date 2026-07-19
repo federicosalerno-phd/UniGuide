@@ -175,11 +175,18 @@ def _copy_series_local(files, dst):
 
 
 def series_to_nifti(folder, series_id, out_path):
-    """Read one series and write it as an int16 NIfTI, preserving geometry."""
+    """Read one series and write it as an int16 NIfTI, preserving geometry.
+
+    ``folder`` is the local copy that holds ONLY the chosen series, so if the exact id
+    lookup misses (SimpleITK can format the series id a bit differently from pydicom's UID)
+    we simply read the single series present in the folder.
+    """
     reader = sitk.ImageSeriesReader()
-    files = reader.GetGDCMSeriesFileNames(folder, series_id)
+    files = reader.GetGDCMSeriesFileNames(folder, series_id) if series_id else []
     if not files:
-        raise ValueError("series %s not found in %s" % (series_id, folder))
+        files = reader.GetGDCMSeriesFileNames(folder)  # the only series in the local copy
+    if not files:
+        raise ValueError("no readable DICOM series in %s" % folder)
     reader.SetFileNames(files)
     img = reader.Execute()
     img = sitk.Cast(img, sitk.sitkInt16)
