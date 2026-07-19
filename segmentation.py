@@ -309,6 +309,32 @@ def run_dental_nnunet(ct_nifti, work_dir):
         device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
     use_fold = int(fold) if str(fold).isdigit() else fold
     predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
+
+    # RAM-aware resolution: the on-CPU segmentation map is (classes x resampled-volume). On a
+    # large scan at the model's fine spacing that can be >10 GB. If free RAM is too small,
+    # coarsen the working spacing just enough to fit (the mandible stays well resolved). The
+    # voxel-count estimate is a product over axes, so axis order does not matter.
+    try:
+        import psutil
+        cm = predictor.configuration_manager
+        in_img = sitk.ReadImage(os.path.join(in_dir, "CASE_0000.nii.gz"))
+        sh = np.array(in_img.GetSize(), dtype=float)
+        isp = np.array(in_img.GetSpacing(), dtype=float)
+        tgt = np.array(cm.spacing, dtype=float)
+        n_cls = len(predictor.dataset_json.get("labels", {})) or 6
+        soft_gb = float(np.prod(np.ceil(sh * isp / tgt))) * n_cls * 4 / 1e9
+        free_gb = psutil.virtual_memory().available / 1e9
+        budget = max(2.0, free_gb * 0.45)
+        if soft_gb > budget:
+            factor = (soft_gb / budget) ** (1.0 / 3.0)
+            cm.configuration["spacing"] = (tgt * factor).tolist()
+            log("low RAM: %.1f GB free, map needs %.1f GB; coarsening working spacing x%.2f"
+                % (free_gb, soft_gb, factor))
+        else:
+            log("RAM ok: %.1f GB free, segmentation map ~%.1f GB" % (free_gb, soft_gb))
+    except Exception as e:
+        log("RAM check skipped:", e)
+
     try:
         predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
                                      num_processes_preprocessing=1, num_processes_segmentation_export=1)
