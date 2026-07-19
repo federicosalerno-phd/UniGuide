@@ -231,6 +231,55 @@ def run_moose(ct_nifti, model, work_dir):
     return hits[-1]
 
 
+def _find_dental_model():
+    """Locate the DentalSegmentator (Dataset112) 3d_fullres trainer folder, or None."""
+    bases = []
+    try:
+        import moosez
+        bases.append(os.path.join(os.path.dirname(moosez.__file__), "models",
+                                  "nnunet_trained_models", "Dataset112_DentalSegmentator_v100"))
+    except Exception:
+        pass
+    bases.append(r"D:/uniguide_seg_models/Dataset112_DentalSegmentator_v100")
+    for base in bases:
+        if os.path.isdir(base):
+            for name in os.listdir(base):
+                if "3d_fullres" in name and os.path.isdir(os.path.join(base, name)):
+                    return os.path.join(base, name)
+    return None
+
+
+def run_dental_nnunet(ct_nifti, work_dir):
+    """Head path: run DentalSegmentator directly (nnU-Net, no test-time mirroring) so it is
+    faster than MOOSE AND streams a real percentage. Returns the label map, or None to fall
+    back to MOOSE if the model is not present."""
+    model = _find_dental_model()
+    if not model:
+        log("dental model not found, falling back to MOOSE")
+        return None
+    import torch
+    from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+    in_dir = os.path.join(work_dir, "nn_in")
+    out_dir = os.path.join(work_dir, "nn_out")
+    os.makedirs(in_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    shutil.copyfile(ct_nifti, os.path.join(in_dir, "CASE_0000.nii.gz"))
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log("dental nnU-Net on", dev.type, "(no mirroring)")
+    predictor = nnUNetPredictor(
+        tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
+        perform_everything_on_device=(dev.type == "cuda" and False),
+        device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
+    predictor.initialize_from_trained_model_folder(model, use_folds=(0,), checkpoint_name="checkpoint_final.pth")
+    predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
+                                 num_processes_preprocessing=2, num_processes_segmentation_export=2)
+    outs = glob.glob(os.path.join(out_dir, "*.nii.gz"))
+    if not outs:
+        raise RuntimeError("dental nnU-Net produced no output")
+    log("dental output:", outs[0])
+    return outs[0]
+
+
 # ---------------------------------------------------------------- post-processing
 
 def clean_components(mask, largest_only=False, rel=0.10, abs_min=50):
@@ -376,7 +425,11 @@ def segment(dicom_folder, series_id, region, work_dir):
     os.makedirs(work_dir, exist_ok=True)
     local = _prepare_local_series(dicom_folder, series_id, work_dir)
     nifti = series_to_nifti(local, series_id, os.path.join(work_dir, "input", "CT_%s.nii.gz" % region))
-    label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+    if region == "head":
+        # direct DentalSegmentator (fast, shows a percentage); MOOSE is the fallback
+        label_nii = run_dental_nnunet(nifti, work_dir) or run_moose(nifti, cfg["moose_model"], work_dir)
+    else:
+        label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
     stls = labels_to_stls(label_nii, cfg, os.path.join(work_dir, "stl"))
     bundle = save_edit_bundle(nifti, label_nii, cfg, os.path.join(work_dir, "edit"))
     return {"ok": True, "region": region, "label_nii": label_nii, "stls": stls, "bundle": bundle}

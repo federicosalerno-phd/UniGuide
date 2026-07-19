@@ -4464,7 +4464,12 @@ function onSegEvent(s){
     return;
   }
   if(e.cmd==='segment'){
-    if(e.kind==='progress'){ if(/workflow|predict|download|copying|scanning|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140)); }
+    if(e.kind==='progress'){
+      const m=e.text.match(/(\d+)\/(\d+)\s*\[/);
+      if(m){ $('segStatus').textContent='segmenting '+Math.round(100*(+m[1])/(+m[2]))+'%'; return; }
+      if(/copying:|scanning:/i.test(e.text)){ $('segStatus').textContent=e.text.slice(0,60); return; }
+      if(/workflow|predict|download|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140));
+    }
     else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
       segState.running=false; $('segStartBtn').disabled=false;
