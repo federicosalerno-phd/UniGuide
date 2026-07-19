@@ -804,7 +804,7 @@ let fibNodeDrag=-1;                // index of the segment node currently being 
 let fibulaMesh=null;               // loaded fibula STL (its own environment)
 let fibulaAxis=null;               // {o,d,len,safeMin,safeMax} shaft axis, world
 let teethMesh=null, teethPivot=null;   // OPTIONAL teeth STL: a visual reference the user aligns manually to the mandible. teethPivot lives INSIDE modelPivot so it rides the mandible's orientation (stays registered), while its OWN rigid transform (P.teeth rot+trans) is independent of the bone. Everything teeth is optional, absent means a no-op everywhere.
-let teethAlign=null, teethAlignMarks=[];   // 3-point auto-align: {pairs:[{mand,teeth}], want:'mand'|'teeth'} while picking, else null
+let teethAlign=null, teethAlignMarks=[];   // point-based align: {mand:[Vector3], teeth:[Vector3]} while picking (paired by index), else null. teethAlignMarks = [{sphere,sprite,mesh}]
 let fibAxisLine=null;              // axis line viz
 let fibXferMeshes=[];              // real fibula bone pieces (clipped) on the DONOR fibula
 let fibMandPieces=[];             // the same real pieces transferred onto the MANDIBLE
@@ -4090,7 +4090,9 @@ function ingestTeeth(positions,name){
   // Two single-sided meshes on the SAME geometry give a two-tone look, cyan outside, coral inside,
   // so the surface orientation is obvious. No wireframe overlay, that was the main cause of the lag.
   const opaque=(P.teeth.op>=0.999);
-  const mkMat=(col,sideFlag)=>new THREE.MeshStandardMaterial({color:col,roughness:0.5,metalness:0.02,side:sideFlag,transparent:!opaque,opacity:P.teeth.op,depthWrite:opaque});
+  // polygonOffset (toward the eye) so the teeth, when they overlap the mandible, render consistently in
+  // front instead of z-fighting with it (that shimmer was the "tremola" during alignment).
+  const mkMat=(col,sideFlag)=>new THREE.MeshStandardMaterial({color:col,roughness:0.5,metalness:0.02,side:sideFlag,transparent:!opaque,opacity:P.teeth.op,depthWrite:opaque,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2});
   teethMesh=new THREE.Group(); teethMesh.name='teeth'; teethMesh.userData.isTeeth=true;
   const inner=new THREE.Mesh(geo, mkMat(TEETH_IN, THREE.BackSide));  inner.userData.teethFace='in';  inner.renderOrder=2;
   const outer=new THREE.Mesh(geo, mkMat(TEETH_OUT,THREE.FrontSide)); outer.userData.teethFace='out'; outer.renderOrder=3;
@@ -4142,9 +4144,16 @@ function renderTeethPanel(){ const el=$('teethBody'); if(!el)return;
   el.style.display='block'; const ld=$('teethLoadRow'); if(ld)ld.style.display='block';
   const jog=(a,lbl,ttl)=>`<div class="slrow"><span class="sl-l" title="${ttl}">${lbl}</span><div class="jog" id="jogTe_${a}" title="Drag" onpointerdown="teethJogStart(event,'${a}')"><span class="ja">&#8644;</span><span class="jv" id="jvTe_${a}">0</span></div><span class="numwrap"><input type="number" id="nbTe_${a}" class="numin" value="0" step="${a[0]==='r'?'0.5':'0.2'}" onchange="onTeethNum('${a}')"><span class="stp"><button type="button" onmousedown="holdStep('nbTe_${a}',1)" onmouseup="holdStop()" onmouseleave="holdStop()">&#9650;</button><button type="button" onmousedown="holdStep('nbTe_${a}',-1)" onmouseup="holdStop()" onmouseleave="holdStop()">&#9660;</button></span></span></div>`;
   el.innerHTML =
-    `<div class="sec-lbl">Auto-align (3 points)</div>`+
-    `<button class="btn-outline" id="btnTeethAlign" style="width:100%" onclick="startTeethAlign()">Align to the mandible with 3 points</button>`+
-    `<div class="note" id="teethAlignStat" style="padding-top:4px">Pick 3 matching landmarks on the mandible and on the teeth, the app snaps them together. You can still fine-tune by hand below.</div>`+
+    `<div class="sec-lbl">Point-based alignment</div>`+
+    `<button class="btn-outline" id="btnTeethAlign" title="Align the teeth to the mandible with at least 3 matching points" style="width:100%" onclick="startTeethAlign()">Point based alignment</button>`+
+    `<div class="note" id="teethAlignStat" style="padding-top:4px">Click matching landmarks on the mandible (red) and the teeth (green), at least 3 on each, then Align.</div>`+
+    `<div id="teethAlignTools" style="display:none">`+
+      `<div class="slrow" style="gap:6px;margin-top:2px"><button class="btn-outline" id="btnTgtMand" style="flex:1;padding:4px" onclick="setTeethTarget('mand')">Mandible</button>`+
+        `<button class="btn-outline" id="btnTgtTeeth" style="flex:1;padding:4px" onclick="setTeethTarget('teeth')">Teeth</button></div>`+
+      `<div class="slrow" style="gap:6px;margin-top:4px"><button class="btn-confirm" id="btnTeethDoAlign" style="flex:1;padding:4px 8px" onclick="doTeethAlign()" disabled>Align</button>`+
+        `<button class="btn-outline" style="padding:4px 8px" onclick="undoTeethMark()">Undo</button>`+
+        `<button class="btn-outline" style="padding:4px 8px" onclick="cancelTeethAlign()">Cancel</button></div>`+
+    `</div>`+
     `<div class="sec-lbl">Manual rotation (deg)</div>`+jog('rx','X axis','Rotate teeth about X')+jog('ry','Y axis','Rotate teeth about Y')+jog('rz','Z axis','Rotate teeth about Z')+
     `<div class="sec-lbl">Manual position (mm)</div>`+jog('tx','X','Move teeth along X')+jog('ty','Y','Move teeth along Y')+jog('tz','Z','Move teeth along Z')+
     `<div class="slrow"><span class="sl-l">Opacity</span><input type="range" id="slTeethOp" min="0" max="100" value="100" step="1" oninput="onTeethOp(this.value)"><span class="sl-v" id="svTeethOp">100%</span></div>`+
@@ -4175,38 +4184,72 @@ function rigidFromPointPairs(src, dst){
   const t=cd.clone().sub(cs.clone().applyQuaternion(q));
   return {quaternion:q, position:t};
 }
+// A small numbered disc that always faces the camera (canvas texture on a Sprite), coloured by its mesh.
+function makeNumSprite(text, colHex){
+  const S=72, c=document.createElement('canvas'); c.width=c.height=S; const x=c.getContext('2d');
+  x.clearRect(0,0,S,S); x.beginPath(); x.arc(S/2,S/2,S*0.40,0,Math.PI*2); x.fillStyle='rgba(6,8,12,0.92)'; x.fill();
+  x.lineWidth=6; x.strokeStyle='#'+('00000'+(colHex>>>0).toString(16)).slice(-6); x.stroke();
+  x.fillStyle='#ffffff'; x.font='bold 42px Arial, sans-serif'; x.textAlign='center'; x.textBaseline='middle'; x.fillText(text, S/2, S/2+2);
+  const tex=new THREE.CanvasTexture(c); tex.minFilter=THREE.LinearFilter;
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, depthTest:false, transparent:true}));
+  const sz=Math.max(modelRadius*0.05,2.2); sp.scale.set(sz,sz,1); sp.renderOrder=101; return sp;
+}
+const TEETH_MAND_COL=0xff4d4d, TEETH_TEETH_COL=0x33d17a;   // mandible landmarks red, teeth landmarks green
 function setTeethAlignStat(msg){ const e=$('teethAlignStat'); if(e)e.textContent=msg; }
-function clearTeethMarks(){ teethAlignMarks.forEach(m=>disposeMesh(m)); teethAlignMarks=[]; }
-function addTeethMark(world, col){ const m=new THREE.Mesh(new THREE.SphereGeometry(Math.max(modelRadius*0.012,0.6),12,10), new THREE.MeshBasicMaterial({color:col,depthTest:false}));
-  m.position.copy(world); m.renderOrder=99; group.add(m); teethAlignMarks.push(m); invalidate(); }
-const TEETH_PAIR_COL=[0xff4d4d,0x5bd96a,0x5599ff];   // pair 1 red, 2 green, 3 blue
+function teethAlignFade(fade){ if(!teethMesh)return; const o=fade?0.26:P.teeth.op, opaque=(o>=0.999);
+  teethMesh.traverse(m=>{ if(m.material){ m.material.opacity=o; m.material.transparent=!opaque; m.material.depthWrite=opaque; } }); invalidate(); }
+function setTeethTarget(which){ if(!teethAlign)return; teethAlign.target=which;
+  const bm=$('btnTgtMand'), bt=$('btnTgtTeeth');
+  if(bm){ bm.style.background=(which==='mand')?'rgba(255,77,77,.28)':''; bm.style.borderColor=(which==='mand')?'#ff4d4d':''; }
+  if(bt){ bt.style.background=(which==='teeth')?'rgba(51,209,122,.28)':''; bt.style.borderColor=(which==='teeth')?'#33d17a':''; }
+  teethAlignFade(which==='mand');   // fade the teeth away so the mandible underneath is easy to click on
+  updateTeethAlignStat(); }
+function updateTeethAlignStat(){ if(!teethAlign)return; const nm=teethAlign.mand.length, nt=teethAlign.teeth.length, ready=Math.min(nm,nt);
+  const on=(teethAlign.target==='mand')?'MANDIBLE (red)':'TEETH (green)';
+  setTeethAlignStat('Picking '+on+'. Mandible '+nm+', teeth '+nt+'. '+(ready>=3?(ready+' pairs, ready to Align.'):'Need at least 3 matching pairs.'));
+  const b=$('btnTeethDoAlign'); if(b)b.disabled=(ready<3); }
+function disposeAlignMark(m){ if(m.sphere)disposeMesh(m.sphere);
+  if(m.sprite){ group.remove(m.sprite); if(m.sprite.material){ if(m.sprite.material.map)m.sprite.material.map.dispose(); m.sprite.material.dispose(); } } }
+function clearTeethMarks(){ teethAlignMarks.forEach(disposeAlignMark); teethAlignMarks=[]; }
+function addAlignMark(world, meshKey, num){ const col=(meshKey==='mand')?TEETH_MAND_COL:TEETH_TEETH_COL, r=Math.max(modelRadius*0.011,0.55);
+  const sphere=new THREE.Mesh(new THREE.SphereGeometry(r,14,12), new THREE.MeshBasicMaterial({color:col,depthTest:false})); sphere.position.copy(world); sphere.renderOrder=99; group.add(sphere);
+  const sprite=makeNumSprite(String(num), col); sprite.position.copy(world).add(new THREE.Vector3(0,r*3.2,0)); group.add(sprite);
+  teethAlignMarks.push({sphere, sprite, mesh:meshKey}); invalidate(); }
+// N-point picking: click landmarks on either mesh (auto-detected), red = mandible, green = teeth, each
+// numbered consecutively within its own mesh. Correspondence is by number (mandible k <-> teeth k). The
+// user aligns on CONFIRM, not automatically, with as many points as they like (>=3 per mesh).
 function startTeethAlign(){ if(!teethMesh){ toast('Load a teeth STL first'); return; }
-  clearTeethMarks(); teethAlign={pairs:[], want:'mand'};
-  const b=$('btnTeethAlign'); if(b){ b.classList.add('picking'); b.textContent='Cancel alignment'; b.onclick=cancelTeethAlign; }
-  setTeethAlignStat('Point 1 of 3: click a landmark on the MANDIBLE.'); toast('3-point align: click a mandible landmark, then the same point on the teeth'); }
-function cancelTeethAlign(){ teethAlign=null; clearTeethMarks(); const b=$('btnTeethAlign'); if(b){ b.classList.remove('picking'); b.textContent='Align to the mandible with 3 points'; b.onclick=startTeethAlign; }
-  setTeethAlignStat('Pick 3 matching landmarks on the mandible and on the teeth, the app snaps them together. You can still fine-tune by hand below.'); }
-function pickTeethAlignAt(e){ if(!teethAlign||!teethMesh||!boneMesh) return;
-  const rc=pointerRay(e); const target=(teethAlign.want==='mand')?boneMesh:teethMesh;
-  const hit=rc.intersectObject(target,true)[0]; if(!hit){ toast('Click directly on the '+(teethAlign.want==='mand'?'mandible':'teeth')); return; }
-  const idx=teethAlign.pairs.length, col=TEETH_PAIR_COL[idx%3];
-  addTeethMark(hit.point.clone(), col);
-  if(teethAlign.want==='mand'){ teethAlign.pairs.push({mand:hit.point.clone()}); teethAlign.want='teeth';
-    setTeethAlignStat('Point '+(idx+1)+' of 3: now click the SAME point on the TEETH.'); }
-  else { teethAlign.pairs[idx-1].teeth=hit.point.clone(); teethAlign.want='mand';
-    if(teethAlign.pairs.length>=3){ applyTeethAlign(); }
-    else setTeethAlignStat('Point '+(teethAlign.pairs.length+1)+' of 3: click a landmark on the MANDIBLE.'); } }
-function applyTeethAlign(){ if(!teethAlign||!teethPivot||teethAlign.pairs.length<3) return;
+  clearTeethMarks(); teethAlign={mand:[], teeth:[], target:'mand'};
+  const gl=$('gl'); if(gl)gl.style.cursor='crosshair';
+  const b=$('btnTeethAlign'); if(b){ b.classList.add('picking'); b.textContent='Picking, click Cancel to stop'; b.onclick=cancelTeethAlign; }
+  const t=$('teethAlignTools'); if(t)t.style.display='block';
+  setTeethTarget('mand'); toast('Pick matching landmarks. Toggle Mandible / Teeth, at least 3 each, then Align'); }
+function cancelTeethAlign(){ const had=!!teethAlign; teethAlign=null; clearTeethMarks();
+  const gl=$('gl'); if(gl)gl.style.cursor='grab';
+  if(had) teethAlignFade(false);   // restore the teeth to their real opacity
+  const b=$('btnTeethAlign'); if(b){ b.classList.remove('picking'); b.textContent='Point based alignment'; b.onclick=startTeethAlign; }
+  const t=$('teethAlignTools'); if(t)t.style.display='none';
+  setTeethAlignStat('Click matching landmarks on the mandible (red) and the teeth (green), at least 3 on each, then Align.'); }
+function undoTeethMark(){ if(!teethAlign||!teethAlignMarks.length)return; const m=teethAlignMarks.pop(); disposeAlignMark(m);
+  if(m.mesh==='mand')teethAlign.mand.pop(); else teethAlign.teeth.pop(); updateTeethAlignStat(); invalidate(); }
+// Raycast ONLY the active target mesh, so an overlap between teeth and mandible can never mis-pick.
+function pickTeethAlignAt(e){ if(!teethAlign||!teethMesh||!boneMesh) return; const which=teethAlign.target;
+  const rc=pointerRay(e); const hit=(which==='mand')?rc.intersectObject(boneMesh,false)[0]:rc.intersectObject(teethMesh,true)[0];
+  if(!hit){ toast('Click on the '+(which==='mand'?'mandible':'teeth')); return; }
+  const arr=(which==='mand')?teethAlign.mand:teethAlign.teeth; arr.push(hit.point.clone());
+  addAlignMark(hit.point.clone(), which, arr.length); updateTeethAlignStat(); }
+function doTeethAlign(){ if(!teethAlign||!teethPivot) return; const nm=teethAlign.mand.length, nt=teethAlign.teeth.length, n=Math.min(nm,nt);
+  if(n<3){ toast('Pick at least 3 matching points on each mesh'); return; }
   modelPivot.updateMatrixWorld(true); teethMesh.updateMatrixWorld(true);
-  const src=[], dst=[];   // src = teeth points in teethMesh-local (geometry) frame; dst = mandible points in modelPivot-local frame
-  teethAlign.pairs.forEach(p=>{ if(!p.mand||!p.teeth)return; src.push(teethMesh.worldToLocal(p.teeth.clone())); dst.push(modelPivot.worldToLocal(p.mand.clone())); });
-  const r=(src.length>=3)?rigidFromPointPairs(src,dst):null;
+  const src=[], dst=[];   // src = teeth points in teeth-local, dst = mandible points in modelPivot-local, paired by index
+  for(let i=0;i<n;i++){ src.push(teethMesh.worldToLocal(teethAlign.teeth[i].clone())); dst.push(modelPivot.worldToLocal(teethAlign.mand[i].clone())); }
+  const r=rigidFromPointPairs(src,dst); const uneven=(nm!==nt);
   cancelTeethAlign();
-  if(!r){ toast('Could not compute the alignment, pick 3 well-spread, non-aligned points'); return; }
+  if(!r){ toast('Could not compute the alignment, pick well spread, non-aligned points'); return; }
   const eul=new THREE.Euler().setFromQuaternion(r.quaternion,'XYZ');
   P.teeth.rx=((eul.x/D2R)%360+360)%360; P.teeth.ry=((eul.y/D2R)%360+360)%360; P.teeth.rz=((eul.z/D2R)%360+360)%360;
   P.teeth.tx=r.position.x; P.teeth.ty=r.position.y; P.teeth.tz=r.position.z;
-  applyTeeth(); syncTeethUI(); invalidate(); toast('Teeth aligned to the mandible (3 points). Fine-tune by hand if needed.'); }
+  applyTeeth(); syncTeethUI(); invalidate(); toast('Teeth aligned with '+n+' points'+(uneven?', used the first '+n+' of each':'')+'. Fine-tune by hand if needed.'); }
 // SEGMENTATION module entry point (placeholder). The real DICOM segmentation environment, loading a
 // series, segmenting the tumour and the nerves, exporting meshes, is planned as a separate project;
 // this stub reserves the entry point so the section is predisposed.
