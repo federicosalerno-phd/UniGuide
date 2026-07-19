@@ -492,6 +492,41 @@ class Backend(QObject):
             lab[:, :, idx] = arr
         return json.dumps({"ok": True})
 
+    @pyqtSlot(int, int, int, int, int, float, result=str)
+    def edit_region_grow(self, axis, idx, x, y, label, tol):
+        """Flood-fill from a seed on the CT slice: the connected region of voxels whose HU
+        is within ``tol`` of the seed gets ``label``. Returns the updated mask slice."""
+        import numpy as np, base64
+        from scipy import ndimage
+        if not self._edit:
+            return json.dumps({"ok": False})
+        axis, idx, x, y, label = int(axis), int(idx), int(x), int(y), int(label)
+        ct = self._slice(self._edit["ct"], axis, idx).astype(np.float32)
+        h, w = ct.shape
+        if not (0 <= y < h and 0 <= x < w):
+            return json.dumps({"ok": False})
+        seed = ct[y, x]
+        band = np.abs(ct - seed) <= float(tol)
+        lab, n = ndimage.label(band)
+        comp = lab[y, x]
+        if comp == 0:
+            return json.dumps({"ok": False})
+        region = (lab == comp)
+        msl = self._slice(self._edit["labels"], axis, idx)
+        msl = msl.copy()
+        msl[region] = label
+        # write back
+        laba = self._edit["labels"]
+        if axis == 0:
+            laba[idx] = msl
+        elif axis == 1:
+            laba[:, idx, :] = msl
+        else:
+            laba[:, :, idx] = msl
+        sl = np.ascontiguousarray(msl.astype(np.uint8))
+        return json.dumps({"ok": True, "h": int(h), "w": int(w),
+                           "data": base64.b64encode(sl.tobytes()).decode()})
+
     @pyqtSlot(int, str)
     def edit_remesh(self, label, out_dir):
         """Persist the edited mask and re-mesh one label via the seg env (async, cmd 'remesh')."""
