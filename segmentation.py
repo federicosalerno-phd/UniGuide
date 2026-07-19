@@ -239,7 +239,9 @@ def run_moose(ct_nifti, model, work_dir):
 
 
 def _find_dental_model():
-    """Locate the DentalSegmentator (Dataset112) 3d_fullres trainer folder, or None."""
+    """Locate the DentalSegmentator (Dataset112) 3d_fullres trainer folder and the fold that
+    actually has a checkpoint. Returns (trainer_folder, fold) or (None, None). MOOSE ships the
+    weights under fold_all; a manual download may use fold_0."""
     bases = []
     try:
         import moosez
@@ -249,18 +251,23 @@ def _find_dental_model():
         pass
     bases.append(r"D:/uniguide_seg_models/Dataset112_DentalSegmentator_v100")
     for base in bases:
-        if os.path.isdir(base):
-            for name in os.listdir(base):
-                if "3d_fullres" in name and os.path.isdir(os.path.join(base, name)):
-                    return os.path.join(base, name)
-    return None
+        if not os.path.isdir(base):
+            continue
+        for name in os.listdir(base):
+            tf = os.path.join(base, name)
+            if "3d_fullres" not in name or not os.path.isdir(tf):
+                continue
+            for fold in ("all", "0"):
+                if os.path.exists(os.path.join(tf, "fold_" + fold, "checkpoint_final.pth")):
+                    return tf, fold
+    return None, None
 
 
 def run_dental_nnunet(ct_nifti, work_dir):
     """Head path: run DentalSegmentator directly (nnU-Net, no test-time mirroring) so it is
     faster than MOOSE AND streams a real percentage. Returns the label map, or None to fall
     back to MOOSE if the model is not present."""
-    model = _find_dental_model()
+    model, fold = _find_dental_model()
     if not model:
         log("dental model not found, falling back to MOOSE")
         return None
@@ -272,12 +279,13 @@ def run_dental_nnunet(ct_nifti, work_dir):
     os.makedirs(out_dir, exist_ok=True)
     shutil.copyfile(ct_nifti, os.path.join(in_dir, "CASE_0000.nii.gz"))
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log("dental nnU-Net on", dev.type, "(no mirroring)")
+    log("dental nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
     predictor = nnUNetPredictor(
         tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
         perform_everything_on_device=(dev.type == "cuda" and False),
         device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
-    predictor.initialize_from_trained_model_folder(model, use_folds=(0,), checkpoint_name="checkpoint_final.pth")
+    use_fold = int(fold) if str(fold).isdigit() else fold
+    predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
     predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
                                  num_processes_preprocessing=2, num_processes_segmentation_export=2)
     outs = glob.glob(os.path.join(out_dir, "*.nii.gz"))

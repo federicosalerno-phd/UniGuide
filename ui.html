@@ -300,8 +300,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         <div id="p0inner">
           <div class="p0note" style="max-width:620px;margin-bottom:14px;font-size:14px">Start from a <b>CT scan</b> and segment it here, or load <b>STL files</b> you already have.</div>
 
-          <div style="max-width:620px;width:100%;margin-bottom:18px;padding:18px;border:1px solid var(--teal);border-radius:10px;background:rgba(90,200,190,.08)">
-            <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+          <div style="max-width:470px;width:100%;margin-bottom:18px;padding:16px 18px;border:1px solid var(--teal);border-radius:10px;background:rgba(90,200,190,.08)">
+            <div style="display:flex;align-items:center;gap:14px;margin-bottom:13px">
               <svg viewBox="0 0 24 24" width="30" height="30" style="fill:none;stroke:var(--teal);stroke-width:1.6;flex:none"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>
               <div>
                 <div style="color:var(--t1);font-weight:700;font-size:16px">Start from a CT scan</div>
@@ -405,7 +405,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <span id="segSpin" class="segspin" style="display:none"></span>
               <span id="segStatus" style="color:var(--t2);font-size:12px"></span>
             </div>
-            <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal);transition:width .3s"></div></div>
+            <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal);transition:width 1s cubic-bezier(.4,0,.2,1)"></div></div>
 
             <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:120px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
           </div>
@@ -4420,16 +4420,14 @@ function segStart(){
   if(!s){ toast('Choose a series first.'); return; }
   segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='preparing';
   segBusy(true); segBar(null);
-  segLog('Segmentation started ('+segState.region+(segState.region==='leg'?' '+segState.side:'')+') on '+(s.description||'series')+'.');
   B.seg_run(s.folder, s.series_id, segState.region);
 }
 function segEdit(){
   if(window.__segBundle){ openEditor(window.__segBundle); return; }
   const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
   if(!s){ toast('Pick a series first, then edit.'); return; }
-  $('segStatus').textContent='preparing the CT for drawing, copying locally';
+  $('segStatus').textContent='preparing the CT for drawing';
   segBusy(true); segBar(null);
-  segLog('Preparing '+(s.description||'series')+' for manual drawing.');
   B.seg_ctbundle(s.folder, s.series_id);
 }
 function onSegEvent(s){
@@ -4462,7 +4460,9 @@ function onSegEvent(s){
     return;
   }
   if(e.cmd==='ctbundle'){
-    if(e.kind==='progress'){ if(/copying:/i.test(e.text)) $('segStatus').textContent='copying the scan locally'; else if(/nifti|bundle/i.test(e.text)) $('segStatus').textContent='preparing the slices'; }
+    if(e.kind==='progress'){ const m=e.text.match(/copying:\s*(\d+)\/(\d+)/i);
+      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); segBar(p); $('segStatus').textContent='copying the scan '+p+'%'; }
+      else if(/nifti|bundle/i.test(e.text)){ $('segStatus').textContent='preparing the slices'; segBar(null); } }
     else if(e.kind==='error'){ segBusy(false); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){ segBusy(false); let r={}; try{r=JSON.parse(e.result);}catch(x){}
       if(r&&r.ok&&r.bundle){ window.__segBundle=r.bundle; $('segStatus').textContent='ready, opening editor'; openEditor(r.bundle); }
@@ -4470,7 +4470,8 @@ function onSegEvent(s){
     return;
   }
   if(e.cmd==='list-series'){
-    if(e.kind==='progress'){ if(/scanning:|copying:/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); return; }
+    if(e.kind==='progress'){ const m=e.text.match(/(scanning|copying):\s*(\d+)\/(\d+)/i);
+      if(m){ const p=Math.round(100*(+m[2])/(+m[3])); segBar(p); $('segStatus').textContent=(m[1].toLowerCase()==='copying'?'copying ':'reading the scans ')+p+'%'; } return; }
     segBusy(false);
     if(e.kind==='done'){
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
@@ -4488,11 +4489,11 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
-      const m=e.text.match(/(\d+)\/(\d+)\s*\[/);
-      if(m){ const pct=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='segmenting '+pct+'%'; segBar(pct); return; }
-      if(/copying:/i.test(e.text)){ $('segStatus').textContent='copying the scan locally: '+e.text.replace(/.*copying:/i,'').trim(); return; }
-      if(/predict|Predicting/i.test(e.text)){ $('segStatus').textContent='segmenting, warming up'; return; }
-      if(/workflow|download|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140));
+      let m=e.text.match(/(\d+)\/(\d+)\s*\[/);
+      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='segmenting '+p+'%'; segBar(p); return; }
+      m=e.text.match(/copying:\s*(\d+)\/(\d+)/i);
+      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='copying the scan '+p+'%'; segBar(p); return; }
+      if(/Predicting|preprocess/i.test(e.text)){ $('segStatus').textContent='preparing the model'; segBar(null); return; }
     }
     else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
