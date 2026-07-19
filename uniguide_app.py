@@ -407,6 +407,12 @@ class Backend(QObject):
         work = str(_user_data_dir() / "seg_work")
         self._run_seg_async(["segment", folder, series_id, region, work], "segment")
 
+    @pyqtSlot(str, str)
+    def seg_ctbundle(self, folder, series_id):
+        """Prepare a chosen series for manual drawing, empty mask (async, cmd 'ctbundle')."""
+        work = str(_user_data_dir() / "seg_work_manual")
+        self._run_seg_async(["ctbundle", folder, series_id, work], "ctbundle")
+
     @pyqtSlot(str, result=str)
     def seg_read_stl(self, path):
         """Parse an STL the segmentation produced (absolute path in the work dir)."""

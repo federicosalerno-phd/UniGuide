@@ -361,15 +361,15 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
 
           <div style="display:flex;flex-direction:column;gap:14px">
             <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1 &middot; DICOM folder <span style="opacity:.7">&mdash; pick the patient folder, or any folder above the DICOM, all subfolders are searched</span></div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1. DICOM folder <span style="opacity:.7">pick the patient folder, all subfolders are searched</span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <button class="btn-outline" onclick="segPickFolder()">Choose folder</button>
-                <span id="segFolder" style="color:var(--t1);font-size:12px;word-break:break-all">&mdash;</span>
+                <span id="segFolder" style="color:var(--t1);font-size:12px;word-break:break-all">not chosen</span>
               </div>
             </div>
 
             <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">2 &middot; Region</div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">2. Region</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                 <button id="segRegHead" class="btn-outline seg-seg-on" onclick="segSetRegion('head')">Head (mandible)</button>
                 <button id="segRegLeg" class="btn-outline" onclick="segSetRegion('leg')">Leg (fibula)</button>
@@ -382,14 +382,14 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
             </div>
 
             <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">3 &middot; Series</div>
+              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">3. Series</div>
               <select id="segSeries" style="width:100%;background:#0f1215;color:var(--t1);border:1px solid rgba(255,255,255,.15);border-radius:7px;padding:8px"><option>choose a folder first</option></select>
             </div>
 
             <div style="display:flex;gap:10px;align-items:center">
               <button id="segStartBtn" class="btn-outline" onclick="segStart()" style="border-color:var(--teal);color:var(--teal)">Start segmentation</button>
-              <button class="btn-outline" onclick="openEditor(window.__segBundle)" title="Correct or draw the mask on the CT slices">Edit on slices</button>
-              <span id="segStatus" style="color:var(--t2);font-size:12px">&mdash;</span>
+              <button class="btn-outline" onclick="segEdit()" title="Correct the automatic result, or draw by hand on the CT slices">Edit on slices</button>
+              <span id="segStatus" style="color:var(--t2);font-size:12px"></span>
             </div>
 
             <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:150px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
@@ -401,7 +401,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
       <div id="edModal" style="display:none;position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.72);align-items:center;justify-content:center">
         <div style="width:min(1020px,96vw);height:min(88vh,880px);display:flex;flex-direction:column;background:#15181c;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:16px 18px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <b style="color:var(--t1);font-size:15px">Segmentation editor — correct or draw on the slices</b>
+            <b style="color:var(--t1);font-size:15px">Segmentation editor, correct or draw on the slices</b>
             <div style="cursor:pointer;color:var(--t2);font-size:20px;line-height:1" onclick="closeEditor()">&times;</div>
           </div>
           <div style="flex:1;display:flex;gap:16px;min-height:0">
@@ -439,7 +439,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
               <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">
                 <button id="edUndoBtn" class="btn-outline" onclick="edUndo()">Undo</button>
                 <button id="edRemeshBtn" class="btn-outline" onclick="edRemesh()" style="border-color:var(--teal);color:var(--teal)">Re-mesh &amp; load</button>
-                <span id="edStatus" style="font-size:11px">&mdash;</span>
+                <span id="edStatus" style="font-size:11px"></span>
               </div>
             </div>
           </div>
@@ -4365,9 +4365,9 @@ function openSegmentation(){
   if(!(B&&B.seg_status)){ toast('Segmentation needs the desktop app.'); return; }
   B.seg_status(function(s){ let st={}; try{st=JSON.parse(s);}catch(e){} $('segUnavail').style.display=st.available?'none':'block'; });
   segState={folder:'',region:'head',side:'R',running:false,series:[]};
-  $('segFolder').textContent='—';
+  $('segFolder').textContent='not chosen';
   $('segSeries').innerHTML='<option>choose a folder first</option>';
-  $('segStatus').textContent='—';
+  $('segStatus').textContent='';
   $('segProg').style.display='none'; $('segProg').textContent='';
   $('segStartBtn').disabled=false;
   segSetRegion('head');
@@ -4402,6 +4402,14 @@ function segStart(){
   segLog('Segmentation started ('+segState.region+(segState.region==='leg'?' '+segState.side:'')+') on '+(s.description||'series')+'.');
   B.seg_run(s.folder, s.series_id, segState.region);
 }
+function segEdit(){
+  if(window.__segBundle){ openEditor(window.__segBundle); return; }
+  const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
+  if(!s){ toast('Pick a series first, then edit.'); return; }
+  $('segStatus').textContent='preparing the CT for drawing, copying locally';
+  segLog('Preparing '+(s.description||'series')+' for manual drawing.');
+  B.seg_ctbundle(s.folder, s.series_id);
+}
 function onSegEvent(s){
   let e={}; try{e=JSON.parse(s);}catch(err){return;}
   if(e.cmd==='setup'){
@@ -4431,24 +4439,32 @@ function onSegEvent(s){
     }
     return;
   }
+  if(e.cmd==='ctbundle'){
+    if(e.kind==='progress'){ if(/copying:|scanning:|nifti|bundle/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); }
+    else if(e.kind==='error'){ $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    else if(e.kind==='done'){ let r={}; try{r=JSON.parse(e.result);}catch(x){}
+      if(r&&r.ok&&r.bundle){ window.__segBundle=r.bundle; $('segStatus').textContent='ready, opening editor'; openEditor(r.bundle); }
+      else { $('segStatus').textContent='failed'; segLog('MANUAL PREP FAILED: '+((r&&r.error)||'')); } }
+    return;
+  }
   if(e.cmd==='list-series'){
-    if(e.kind==='progress'){ if(/scanning:/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); return; }
+    if(e.kind==='progress'){ if(/scanning:|copying:/i.test(e.text)) $('segStatus').textContent=e.text.slice(0,70); return; }
     if(e.kind==='done'){
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
       const sel=$('segSeries');
       if(r.ok&&r.series&&r.series.length){
         segState.series=r.series; sel.innerHTML='';
         r.series.forEach(function(se,i){ const o=document.createElement('option'); o.value=String(i);
-          const loc=(se.rel&&se.rel!=='.')?('   ['+se.rel+']'):'';
-          o.textContent=se.slices+' sl · '+(se.description||se.modality||'series')+(se.thickness?(' · '+se.thickness+'mm'):'')+loc;
+          const loc=(se.rel&&se.rel!=='.')?('  in '+se.rel):'';
+          o.textContent=se.slices+' sl, '+(se.description||se.modality||'series')+(se.thickness?(', '+se.thickness+'mm'):'')+loc;
           sel.appendChild(o); });
-        $('segStatus').textContent=r.series.length+' series found — pick one';
+        $('segStatus').textContent=r.series.length+' series found, pick one';
       }else{ segState.series=[]; sel.innerHTML='<option>no DICOM series found</option>'; $('segStatus').textContent='no DICOM found under this folder'; }
     }else if(e.kind==='error'){ $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     return;
   }
   if(e.cmd==='segment'){
-    if(e.kind==='progress'){ if(/workflow|predict|download|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140)); }
+    if(e.kind==='progress'){ if(/workflow|predict|download|copying|scanning|nifti|wrote|moose|label|error|done/i.test(e.text)) segLog(e.text.slice(0,140)); }
     else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
       segState.running=false; $('segStartBtn').disabled=false;
@@ -4500,7 +4516,7 @@ function openEditor(bundle){
     edState.nz=r.nz; edState.ny=r.ny; edState.nx=r.nx; edState.names=r.names||{};
     const sel=$('edLabel'); sel.innerHTML='';
     Object.keys(edState.names).forEach(function(k){ const o=document.createElement('option'); o.value=k; o.textContent=edState.names[k]; sel.appendChild(o); });
-    $('edStatus').textContent='—';
+    $('edStatus').textContent='';
     edBindCanvas(); $('edModal').style.display='flex';
     edSetTool('brush'); edSetAxis(0);
   });

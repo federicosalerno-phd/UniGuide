@@ -71,61 +71,107 @@ def log(*a):
 
 
 # ------------------------------------------------------------------- DICOM handling
+# Reading DICOM straight off a network drive (Google Drive) is far too slow, so listing
+# reads only a few header tags per file, in parallel, and copies nothing. The actual
+# segmentation copies just the chosen series to a local cache, then works locally.
+
+_SCAN_TAGS = ["SeriesInstanceUID", "SeriesDescription", "Modality", "SliceThickness", "InstanceNumber"]
+
+
+def _iter_files(root):
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            yield os.path.join(dirpath, f)
+
+
+def _read_tags(fp):
+    try:
+        import pydicom
+        ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True, specific_tags=_SCAN_TAGS)
+        uid = str(ds.get("SeriesInstanceUID", "") or "")
+        if not uid:
+            return None
+        return (uid, fp, str(ds.get("SeriesDescription", "") or ""),
+                str(ds.get("Modality", "") or ""), str(ds.get("SliceThickness", "") or ""))
+    except Exception:
+        return None
+
+
+def scan_series(root):
+    """Group all DICOM under ``root`` by series, reading minimal tags in parallel."""
+    from concurrent.futures import ThreadPoolExecutor
+    files = list(_iter_files(root))
+    total = len(files)
+    if not total:
+        return {}
+    series = {}
+    done = [0]
+    step = max(1, total // 20)
+
+    def work(fp):
+        r = _read_tags(fp)
+        done[0] += 1
+        if done[0] % step == 0:
+            log("scanning: %d/%d files" % (done[0], total))
+        return r
+
+    with ThreadPoolExecutor(max_workers=24) as ex:
+        for r in ex.map(work, files):
+            if not r:
+                continue
+            uid, fp, desc, mod, thk = r
+            s = series.get(uid)
+            if s is None:
+                s = {"files": [], "description": desc, "modality": mod,
+                     "thickness": thk, "folder": os.path.dirname(fp)}
+                series[uid] = s
+            s["files"].append(fp)
+    return series
+
 
 def list_series(root):
-    """Enumerate DICOM series ANYWHERE under ``root`` (recursively), richest first.
-
-    The user can point at the patient folder, or any folder above the DICOM, and we find
-    every series in the subtree. Each entry carries the exact ``folder`` it lives in so the
-    caller can read it, plus a ``rel`` path shown in the UI so the user knows what it is.
-    """
-    reader = sitk.ImageSeriesReader()
-    out, seen = [], set()
-    for dirpath, _dirs, files in os.walk(root):
-        if not files:
-            continue
+    """List DICOM series anywhere under ``root``, richest first. No copying."""
+    series = scan_series(root)
+    out = []
+    for uid, s in series.items():
         try:
-            ids = reader.GetGDCMSeriesIDs(dirpath)
+            rel = os.path.relpath(s["folder"], root)
         except Exception:
-            continue
-        if not ids:
-            continue
-        try:
-            rel = os.path.relpath(dirpath, root)
-        except Exception:
-            rel = dirpath
-        log("scanning:", rel)
-        for sid in ids:
-            if (dirpath, sid) in seen:
-                continue
-            seen.add((dirpath, sid))
-            fnames = reader.GetGDCMSeriesFileNames(dirpath, sid)
-            if not fnames:
-                continue
-            fr = sitk.ImageFileReader()
-            fr.SetFileName(fnames[0])
-            try:
-                fr.ReadImageInformation()
-            except Exception:
-                continue
-
-            def meta(k):
-                try:
-                    return fr.GetMetaData(k).strip()
-                except Exception:
-                    return ""
-
-            out.append({
-                "series_id": sid,
-                "folder": dirpath,
-                "rel": rel,
-                "description": meta("0008|103e"),
-                "modality": meta("0008|0060"),
-                "thickness": meta("0018|0050"),
-                "slices": len(fnames),
-            })
+            rel = s["folder"]
+        out.append({
+            "series_id": uid, "folder": s["folder"], "rel": rel,
+            "description": s["description"], "modality": s["modality"],
+            "thickness": s["thickness"], "slices": len(s["files"]),
+        })
     out.sort(key=lambda r: -r["slices"])
+    log("found %d series under %s" % (len(out), root))
     return out
+
+
+def _copy_series_local(files, dst):
+    """Copy a series' files to a local folder in parallel, with progress."""
+    from concurrent.futures import ThreadPoolExecutor
+    os.makedirs(dst, exist_ok=True)
+    total = len(files)
+    done = [0]
+    step = max(1, total // 20)
+
+    def cp(i_fp):
+        i, fp = i_fp
+        out = os.path.join(dst, "%06d.dcm" % i)
+        try:
+            if not (os.path.exists(out) and os.path.getsize(out) > 0):
+                shutil.copyfile(fp, out)
+        except Exception as e:
+            log("copy failed:", fp, e)
+        done[0] += 1
+        if done[0] % step == 0:
+            log("copying: %d/%d files" % (done[0], total))
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        list(ex.map(cp, enumerate(files)))
+    log("copied %d files -> %s" % (total, dst))
+    return dst
 
 
 def series_to_nifti(folder, series_id, out_path):
@@ -288,12 +334,48 @@ def save_edit_bundle(ct_nifti, label_nii, cfg, out_dir):
     return path
 
 
+GENERIC_LABELS = {1: "Bone", 2: "Nerve", 3: "Vessel", 4: "Tumour", 5: "Extra"}
+
+
+def _prepare_local_series(dicom_folder, series_id, work_dir):
+    """Copy just the chosen series to a local folder and return it (fast, off-drive)."""
+    s = scan_series(dicom_folder)
+    files = s.get(series_id, {}).get("files")
+    if not files:
+        raise ValueError("series not found under %s" % dicom_folder)
+    return _copy_series_local(files, os.path.join(work_dir, "dicom_local"))
+
+
+def ct_bundle(dicom_folder, series_id, work_dir):
+    """Manual path: convert a chosen series to an editable bundle with an EMPTY mask,
+    so the user can draw the segmentation from scratch, no model involved."""
+    os.makedirs(work_dir, exist_ok=True)
+    local = _prepare_local_series(dicom_folder, series_id, work_dir)
+    nifti = series_to_nifti(local, series_id, os.path.join(work_dir, "input", "CT_manual.nii.gz"))
+    ct_img = sitk.ReadImage(nifti)
+    ct = sitk.GetArrayFromImage(ct_img).astype(np.int16)
+    labels = np.zeros(ct.shape, dtype=np.uint8)
+    out_dir = os.path.join(work_dir, "edit")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "bundle.npz")
+    np.savez_compressed(
+        path, ct=ct, labels=labels,
+        spacing=np.array(ct_img.GetSpacing(), dtype=np.float64),
+        origin=np.array(ct_img.GetOrigin(), dtype=np.float64),
+        direction=np.array(ct_img.GetDirection(), dtype=np.float64),
+        names=json.dumps(GENERIC_LABELS),
+    )
+    log("manual CT bundle:", path)
+    return {"ok": True, "bundle": path, "names": GENERIC_LABELS}
+
+
 def segment(dicom_folder, series_id, region, work_dir):
     if region not in REGIONS:
         raise ValueError("unknown region %r (expected head|leg)" % region)
     cfg = REGIONS[region]
     os.makedirs(work_dir, exist_ok=True)
-    nifti = series_to_nifti(dicom_folder, series_id, os.path.join(work_dir, "input", "CT_%s.nii.gz" % region))
+    local = _prepare_local_series(dicom_folder, series_id, work_dir)
+    nifti = series_to_nifti(local, series_id, os.path.join(work_dir, "input", "CT_%s.nii.gz" % region))
     label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
     stls = labels_to_stls(label_nii, cfg, os.path.join(work_dir, "stl"))
     bundle = save_edit_bundle(nifti, label_nii, cfg, os.path.join(work_dir, "edit"))
@@ -334,6 +416,9 @@ def main(argv):
             result = {"ok": True, "series": list_series(argv[2])}
         elif cmd == "segment":
             result = segment(argv[2], argv[3], argv[4], argv[5])
+        elif cmd == "ctbundle":
+            # ctbundle <folder> <series_id> <work_dir>  -> empty-mask bundle for manual drawing
+            result = ct_bundle(argv[2], argv[3], argv[4])
         elif cmd == "remesh":
             # remesh <bundle.npz> <label_value> <out.stl> [keep-largest|keep-all]
             largest = (len(argv) <= 5) or (argv[5] != "keep-all")
