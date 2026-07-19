@@ -263,10 +263,32 @@ def _find_dental_model():
     return None, None
 
 
+def _crop_to_bone(nifti_path, out_path, thr=150, margin_mm=10.0):
+    """Crop a CT to the bounding box of the bone (+margin), dropping the air/table around it.
+    DentalSegmentator resamples to a very fine spacing, so on a large head CT the on-CPU
+    segmentation map can need >10 GB of RAM; trimming the empty margin cuts that a lot. The
+    physical frame is preserved, so the resulting STL still lands in the right place."""
+    img = sitk.ReadImage(nifti_path)
+    arr = sitk.GetArrayFromImage(img)  # (z,y,x)
+    mask = arr > thr
+    if int(mask.sum()) < 5000:
+        return nifti_path
+    zz, yy, xx = np.where(mask)
+    sx, sy, sz = img.GetSpacing()
+    mx, my, mz = int(margin_mm / sx), int(margin_mm / sy), int(margin_mm / sz)
+    x0, x1 = max(0, int(xx.min()) - mx), min(arr.shape[2], int(xx.max()) + mx + 1)
+    y0, y1 = max(0, int(yy.min()) - my), min(arr.shape[1], int(yy.max()) + my + 1)
+    z0, z1 = max(0, int(zz.min()) - mz), min(arr.shape[0], int(zz.max()) + mz + 1)
+    crop = img[x0:x1, y0:y1, z0:z1]
+    sitk.WriteImage(crop, out_path)
+    log("cropped to bone bbox:", crop.GetSize(), "from", img.GetSize())
+    return out_path
+
+
 def run_dental_nnunet(ct_nifti, work_dir):
     """Head path: run DentalSegmentator directly (nnU-Net, no test-time mirroring) so it is
     faster than MOOSE AND streams a real percentage. Returns the label map, or None to fall
-    back to MOOSE if the model is not present."""
+    back to MOOSE if the model is not present / it runs out of memory."""
     model, fold = _find_dental_model()
     if not model:
         log("dental model not found, falling back to MOOSE")
@@ -277,7 +299,8 @@ def run_dental_nnunet(ct_nifti, work_dir):
     out_dir = os.path.join(work_dir, "nn_out")
     os.makedirs(in_dir, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
-    shutil.copyfile(ct_nifti, os.path.join(in_dir, "CASE_0000.nii.gz"))
+    cropped = _crop_to_bone(ct_nifti, os.path.join(work_dir, "ct_bone.nii.gz"))
+    shutil.copyfile(cropped, os.path.join(in_dir, "CASE_0000.nii.gz"))
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log("dental nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
     predictor = nnUNetPredictor(
@@ -286,8 +309,15 @@ def run_dental_nnunet(ct_nifti, work_dir):
         device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
     use_fold = int(fold) if str(fold).isdigit() else fold
     predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
-    predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
-                                 num_processes_preprocessing=2, num_processes_segmentation_export=2)
+    try:
+        predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
+                                     num_processes_preprocessing=1, num_processes_segmentation_export=1)
+    except Exception as e:
+        # Same model as MOOSE, so a memory failure would fail there too: give a clear message
+        # instead of falling back and failing again.
+        raise RuntimeError("LOW_MEMORY: not enough free RAM to segment this scan at full "
+                           "resolution. Close other apps (the browser especially) to free "
+                           "memory, then try again. (%s)" % e)
     outs = glob.glob(os.path.join(out_dir, "*.nii.gz"))
     if not outs:
         raise RuntimeError("dental nnU-Net produced no output")

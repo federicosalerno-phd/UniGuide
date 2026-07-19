@@ -4499,7 +4499,10 @@ function onSegEvent(s){
     else if(e.kind==='done'){
       segState.running=false; $('segStartBtn').disabled=false; segBusy(false);
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
-      if(!r||!r.ok){ $('segStatus').textContent='failed'; segLog('FAILED: '+((r&&r.error)||'no result')); return; }
+      if(!r||!r.ok){ const em=(r&&r.error)||'no result';
+        if(/LOW_MEMORY|RAM|out of memory|workers died/i.test(em)){ $('segStatus').textContent='not enough free memory'; segLog('Not enough free RAM for this scan at full resolution. Close other apps, the browser especially, then try again. You have plenty of RAM total, it is just busy right now.'); }
+        else { $('segStatus').textContent='failed'; segLog('FAILED: '+em); }
+        return; }
       $('segStatus').textContent='done, loading mesh'; segLoadResult(r);
     }
   }
