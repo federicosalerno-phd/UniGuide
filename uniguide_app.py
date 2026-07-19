@@ -23,7 +23,7 @@ be resterilized between cases; only the connector is fabricated per patient.
 
 Run with ``python uniguide_app.py`` (or ``launch.bat``).
 """
-import os, sys, json, struct
+import os, sys, json, struct, shutil
 
 # ── Interpreter self-bootstrap ──────────────────────────────────────────────────
 # UniGuide needs PyQt6 + PyQt6-WebEngine (installed in the arm-controller virtualenv,
@@ -314,12 +314,12 @@ class Backend(QObject):
             self._last_dir = d
         return d or ""
 
-    def _run_seg_async(self, args, cmd_tag):
-        """Start segmentation.py <args> in the seg env; stream events over segEvent."""
-        py = self._seg_python()
-        if not py:
+    def _spawn(self, python, argv, cmd_tag):
+        """Run ``python argv...`` async, streaming stderr as progress and the final
+        stdout line as the result, both over ``segEvent``."""
+        if not python:
             self.segEvent.emit(json.dumps({"kind": "error", "cmd": cmd_tag,
-                                           "error": "Segmentation environment not configured"}))
+                                           "error": "No Python interpreter available"}))
             return
         proc = QProcess()
         env = QProcessEnvironment.systemEnvironment()
@@ -350,7 +350,50 @@ class Backend(QObject):
         proc.readyReadStandardError.connect(on_err)
         proc.finished.connect(on_fin)
         self._seg_procs.append(proc)
-        proc.start(py, [self._seg_script()] + list(args))
+        proc.start(python, list(argv))
+
+    def _run_seg_async(self, args, cmd_tag):
+        """Start segmentation.py <args> in the seg env; stream events over segEvent."""
+        py = self._seg_python()
+        if not py:
+            self.segEvent.emit(json.dumps({"kind": "error", "cmd": cmd_tag,
+                                           "error": "Segmentation environment not configured"}))
+            return
+        self._spawn(py, [self._seg_script()] + list(args), cmd_tag)
+
+    # ---- first-run bootstrap: install the segmentation environment on demand ----
+
+    def _base_python(self):
+        """A Python that can create the seg venv. In dev this is the app's own; frozen,
+        a bundled standalone under the app, else a system Python on PATH."""
+        cand = os.environ.get("UNIGUIDE_BASE_PYTHON", "").strip()
+        if cand and Path(cand).exists():
+            return cand
+        if not getattr(sys, "frozen", False):
+            return sys.executable
+        bundled = _res_dir() / "pybase" / ("python.exe" if os.name == "nt" else "bin/python")
+        if bundled.exists():
+            return str(bundled)
+        for name in ("py", "python", "python3"):
+            w = shutil.which(name)
+            if w:
+                return w
+        return ""
+
+    def _seg_setup_script(self):
+        return str(_res_dir() / "seg_setup.py")
+
+    @pyqtSlot(str)
+    def seg_setup(self, force):
+        """Create/install the segmentation environment (async; events via segEvent,
+        cmd 'setup'). ``force`` is '', 'cpu' or 'cuda'."""
+        target = str(_user_data_dir() / "segenv")
+        argv = [self._seg_setup_script(), target]
+        if force == "cpu":
+            argv.append("--force-cpu")
+        elif force == "cuda":
+            argv.append("--force-cuda")
+        self._spawn(self._base_python(), argv, "setup")
 
     @pyqtSlot(str)
     def seg_list_series(self, folder):

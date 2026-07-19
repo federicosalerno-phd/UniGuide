@@ -352,7 +352,11 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           <div class="p0note" style="margin:0 0 14px 0;color:var(--t2)">Choose a DICOM folder, pick the series and the region, then segment. The bone is produced in the CT frame and loaded straight in.</div>
 
           <div id="segUnavail" style="display:none;color:#e6a23c;padding:10px 12px;border:1px dashed rgba(230,162,60,.4);border-radius:8px;margin-bottom:12px">
-            Segmentation environment not found. Set <b>UNIGUIDE_SEG_PYTHON</b> to the seg Python, or install it. Models download on first use.
+            Segmentation is not set up yet. Install the engine once, it downloads PyTorch and MOOSE and picks GPU or CPU automatically. Model weights download on first use.
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+              <button id="segSetupBtn" class="btn-outline" onclick="segSetup('')" style="border-color:var(--teal);color:var(--teal)">Set up now</button>
+              <span id="segSetupStatus" style="color:var(--t2);font-size:12px">one-time, a few minutes</span>
+            </div>
           </div>
 
           <div style="display:flex;flex-direction:column;gap:14px">
@@ -4320,6 +4324,12 @@ function openSegmentation(){
   $('segModal').style.display='flex';
 }
 function closeSegmentation(){ $('segModal').style.display='none'; }
+function segSetup(force){
+  if(!(B&&B.seg_setup)){ toast('Setup needs the desktop app.'); return; }
+  $('segSetupBtn').disabled=true; $('segSetupStatus').textContent='installing…';
+  segLog('Setting up the segmentation engine (one-time). Downloading PyTorch and MOOSE…');
+  B.seg_setup(force||'');
+}
 function segSetRegion(r){
   segState.region=r;
   _segActive($('segRegHead'), r==='head'); _segActive($('segRegLeg'), r==='leg');
@@ -4345,6 +4355,19 @@ function segStart(){
 }
 function onSegEvent(s){
   let e={}; try{e=JSON.parse(s);}catch(err){return;}
+  if(e.cmd==='setup'){
+    if(e.kind==='progress'){ if(/STAGE:|Successfully installed|error|torch|cuda|download/i.test(e.text)) segLog(e.text.slice(0,140)); }
+    else if(e.kind==='error'){ $('segSetupBtn').disabled=false; $('segSetupStatus').textContent='failed'; segLog('SETUP ERROR: '+(e.error||'')); }
+    else if(e.kind==='done'){
+      $('segSetupBtn').disabled=false;
+      let r={}; try{r=JSON.parse(e.result);}catch(x){}
+      if(r&&r.ok){ $('segSetupStatus').textContent='ready ('+(r.device||'')+')'; segLog('Segmentation ready ('+(r.device||'')+').');
+        if(B&&B.seg_status){ B.seg_status(function(t){ let st={}; try{st=JSON.parse(t);}catch(x){} $('segUnavail').style.display=st.available?'none':'block'; }); }
+        toast('Segmentation ready ('+(r.device||'')+').'); }
+      else { $('segSetupStatus').textContent='failed'; segLog('SETUP FAILED: '+((r&&r.error)||'no result')); }
+    }
+    return;
+  }
   if(e.cmd==='list-series'){
     if(e.kind==='done'){
       let r={}; try{r=JSON.parse(e.result);}catch(x){}

@@ -11,6 +11,7 @@ datas = [
     ('ui.html', '.'),
     ('guides.json', '.'),
     ('segmentation.py', '.'),      # DICOM segmentation driver, run by the seg env as a subprocess
+    ('seg_setup.py', '.'),         # first-run bootstrap: builds the seg env (torch + MOOSE)
     ('libs', 'libs'),
     ('modules', 'modules'),
     ('input', 'input'),
