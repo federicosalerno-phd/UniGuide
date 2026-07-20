@@ -4356,13 +4356,14 @@ function segRecommendSeries(){            // auto-pick the best series for the c
   const sel=$('segSeries'); if(!segState.series||!segState.series.length)return;
   const region=segState.region; let best=-1, bestScore=-1;
   segState.series.forEach(function(s,i){
-    const d=(s.description||'').toLowerCase(), thk=parseFloat(s.thickness)||5, n=s.slices||0;
+    const d=(s.description||'').toLowerCase(), f=(s.rel||'').toLowerCase(), thk=parseFloat(s.thickness)||5, n=s.slices||0;
     if(n<40)return;                       // skip scouts / tiny series
+    const isLeg=/angio|arti|inferior|gamb|aaii/.test(f);   // the folder tells head from leg
     let score=0;
-    if(region==='head'){ if(/osso|bone/.test(d))score+=100; if(/massicc|collo|facial|\bmf\b/.test(d))score+=20; }
-    else { if(/angio/.test(d))score+=100; if(/arti|inferior|leg|gamb/.test(d))score+=20; }
+    if(region==='head'){ if(isLeg)return; if(/massicc|collo|facial|testa|cranio|\bmf\b|\btc\b/.test(f))score+=60; if(/osso|bone/.test(d))score+=100; if(/massicc|collo/.test(d))score+=20; }
+    else { if(!isLeg)return; if(/angio/.test(d))score+=100; if(/arti|inferior|gamb/.test(d))score+=20; }
     score += Math.max(0,5-thk)*12;        // finer slices are better for bone
-    score += Math.min(n,1200)/150;
+    score += Math.min(n,1500)/150;
     if(score>bestScore){ bestScore=score; best=i; }
   });
   if(best>=0){ sel.value=String(best); $('segStatus').textContent='suggested: '+(segState.series[best].description||'series'); }
