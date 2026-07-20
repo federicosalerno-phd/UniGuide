@@ -1749,6 +1749,7 @@ function buildGizmoOnce(){
 }
 function renderGizmo(){
   if(!gizmoScene||!modelPivot)return;
+  if(curP===SEG)return;                 // no orientation gizmo on the Segmentation step
   // FIXED WORLD reference frame: the gizmo shows the world axes as the camera sees them and does NOT
   // rotate when the mandible is re-oriented (Orient sliders spin the model INSIDE this fixed frame).
   gizmoAxes.quaternion.copy(camera.quaternion).invert();
@@ -4411,56 +4412,52 @@ function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,
 // sends only its new voxels; they are appended and fade in softly (round points, materialise over
 // ~0.7 s), so the mandible builds up continuously and smoothly, never in blocks. No meshing at all;
 // the solid mesh is built once at the end and replaces the cloud.
-let _growCloud=null,_growHidDemo=false,_gcCount=0,_gcMax=300000,_gcMat=null,_gcAnim=0,_gcFit=0,_gcLastT=0,_gcGap=2;
-function segPointsInit(){
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_gcMax*3),3));
-  geo.setAttribute('spawn',new THREE.BufferAttribute(new Float32Array(_gcMax),1));
-  geo.setDrawRange(0,0);
-  _gcMat=new THREE.ShaderMaterial({
-    uniforms:{uNow:{value:performance.now()/1000},uColor:{value:new THREE.Color(0xff7a34)},uSize:{value:4.2}},
-    vertexShader:'attribute float spawn; uniform float uNow; uniform float uSize; varying float vA;'+
-      'void main(){ vA=clamp((uNow-spawn)/0.45,0.0,1.0); vec4 mv=modelViewMatrix*vec4(position,1.0);'+
-      ' gl_PointSize=uSize*vA*(230.0/max(1.0,-mv.z)); gl_Position=projectionMatrix*mv; }',   // grow from 0, crisp
-    fragmentShader:'varying float vA; uniform vec3 uColor;'+
-      'void main(){ vec2 c=gl_PointCoord-0.5; float d=length(c); if(d>0.48) discard;'+   // sharp round dot
-      ' gl_FragColor=vec4(uColor*(0.75+0.25*vA), 1.0); }',                                // opaque, bright, not blurry
-    transparent:true, depthWrite:true, depthTest:true, blending:THREE.NormalBlending});
-  _growCloud=new THREE.Points(geo,_gcMat); _growCloud.name='growCloud'; _growCloud.frustumCulled=false;
-  modelPivot.add(_growCloud); _gcCount=0; _gcFit=0;
-}
-function segPointsAnim(){ if(!_growCloud){ _gcAnim=0; return; }
-  _gcMat.uniforms.uNow.value=performance.now()/1000; invalidate();
-  _gcAnim=requestAnimationFrame(segPointsAnim); }
-function segPoints(b64){
+// Progressive mandible: real CT SLICES sweep up through 3D space as the model segments. Each slice
+// is the CT at that level with the mandible painted red, placed at its true world position; the red
+// pixels stack into the 3D mandible and you see the actual anatomy layer by layer. No meshing; the
+// solid mesh loads once at the end.
+let _sliceGroup=null,_growHidDemo=false,_sliceN=0,_sliceAnim=0,_sliceRevealT=0;
+function segSliceAnim(){ if(!_sliceGroup){ _sliceAnim=0; return; }
+  const now=performance.now()/1000;
+  _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.5)); });
+  invalidate(); _sliceAnim=requestAnimationFrame(segSliceAnim); }
+function segSlice(cornersStr,b64){
   if(segState.region!=='head') return;
-  let bin; try{ bin=atob(b64); }catch(x){ return; }
-  const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
-  const pos=new Float32Array(u.buffer); const m=(pos.length/3)|0; if(m<1) return;
   if(!renderer){ initGL(); loop(); }
   if(!modelPivot) return;
-  if(!_growCloud){
+  const c=cornersStr.split(';').map(function(s){return s.split(',').map(Number);});
+  if(c.length!==4 || c.some(function(p){return p.length!==3||p.some(isNaN);})) return;
+  if(!_sliceGroup){                 // first slice: take over the view
     _growHidDemo=false;
     if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
     disposeMesh(bridge); bridge=null;
     if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
-    segPointsInit(); isDemo=false; segPointsAnim();
+    if(window._skullMesh){ disposeMesh(window._skullMesh); window._skullMesh=null; }
+    _sliceGroup=new THREE.Group(); _sliceGroup.name='sliceScan'; modelPivot.add(_sliceGroup); _sliceN=0; _sliceRevealT=0;
+    isDemo=false; segSliceAnim();
   }
-  const g=_growCloud.geometry, pa=g.attributes.position.array, sa=g.attributes.spawn.array, now=performance.now()/1000;
-  if(_gcLastT>0) _gcGap=Math.min(7,Math.max(0.8,now-_gcLastT));   // estimate the interval between backend batches
-  _gcLastT=now;
-  // stagger the new points' spawn times across the estimated gap so they trickle in continuously
-  // over the wait for the next batch, never appearing as a single block
-  let c=_gcCount; for(let i=0;i<m && c<_gcMax;i++,c++){ pa[c*3]=pos[i*3]; pa[c*3+1]=pos[i*3+1]; pa[c*3+2]=pos[i*3+2]; sa[c]=now+(i/m)*_gcGap*0.92; }
-  _gcCount=c; g.setDrawRange(0,_gcCount);
-  g.attributes.position.needsUpdate=true; g.attributes.spawn.needsUpdate=true;
-  // frame once the cloud is substantial, then leave the camera still (no per-update jitter)
-  if(!_gcFit && _gcCount>4000){ _gcFit=1; g.computeBoundingSphere(); fitObject(_growCloud); }
-  if($('stTri'))$('stTri').textContent=_gcCount.toLocaleString()+' pts';
-  $('segStatus').textContent='segmenting the mandible';
+  const img=new Image();
+  img.onload=function(){
+    if(!_sliceGroup) return;
+    const tex=new THREE.Texture(img); tex.flipY=false; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.needsUpdate=true;
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute([c[0][0],c[0][1],c[0][2], c[1][0],c[1][1],c[1][2], c[2][0],c[2][1],c[2][2], c[3][0],c[3][1],c[3][2]],3));
+    g.setAttribute('uv',new THREE.Float32BufferAttribute([0,0, 1,0, 1,1, 0,1],2));
+    g.setIndex([0,1,2, 0,2,3]);
+    const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false,opacity:0});
+    const now=performance.now()/1000;
+    _sliceRevealT=Math.max(now,_sliceRevealT||now)+0.09;    // trickle slices ~90 ms apart -> a smooth sweep
+    const mesh=new THREE.Mesh(g,mat); mesh.renderOrder=1; mesh.userData.spawn=_sliceRevealT;
+    _sliceGroup.add(mesh); _sliceN++;
+    if(_sliceN===3) fitObject(_sliceGroup);
+    if($('stTri'))$('stTri').textContent=_sliceN+' slices';
+    $('segStatus').textContent='scanning the mandible';
+  };
+  img.src='data:image/png;base64,'+b64;
 }
-function segClearGrow(restoreDemo){ if(_gcAnim){ cancelAnimationFrame(_gcAnim); _gcAnim=0; }
-  if(_growCloud){ disposeMesh(_growCloud); _growCloud=null; } _gcCount=0; _gcFit=0; _gcLastT=0; _gcGap=2;
+function segClearGrow(restoreDemo){ if(_sliceAnim){ cancelAnimationFrame(_sliceAnim); _sliceAnim=0; }
+  if(_sliceGroup){ _sliceGroup.traverse(function(o){ if(o.material&&o.material.map)o.material.map.dispose(); }); disposeMesh(_sliceGroup); _sliceGroup=null; }
+  _sliceN=0; _sliceRevealT=0;
   if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false; }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
@@ -4563,8 +4560,8 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
-      const pt=e.text.match(/\bPOINTS\s+\d+\s+(\S+)/);   // POINTS <n> <base64 world coords>
-      if(pt){ segPoints(pt[1]); return; }
+      const sc=e.text.match(/\bSLICE\s+(\S+)\s+(\S+)/);   // SLICE <world corners> <base64 png>
+      if(sc){ segSlice(sc[1], sc[2]); return; }
       const sr=e.text.match(/\bSTL_READY (\S+) (.+)/);
       if(sr){ if(/Mandible|Fibula/.test(sr[1])) segProg(92); segShowStl(sr[1], sr[2].trim()); return; }
       const ph=e.text.match(/\bPHASE (.+)/);
@@ -4608,7 +4605,7 @@ function segShowSkull(path){                                    // translucent s
     const g=new THREE.BufferGeometry();
     g.setAttribute('position',new THREE.Float32BufferAttribute(d.positions,3));
     g.translate(-off.x,-off.y,-off.z); g.computeVertexNormals();
-    const m=new THREE.MeshStandardMaterial({color:0xdfe3ea,roughness:.75,metalness:0,transparent:true,opacity:0.2,depthWrite:false,side:THREE.DoubleSide});
+    const m=new THREE.MeshStandardMaterial({color:0xe2e6ee,roughness:.75,metalness:0,transparent:true,opacity:0.28,depthWrite:false,side:THREE.DoubleSide});
     const mesh=new THREE.Mesh(g,m); mesh.name='skull'; mesh.renderOrder=-1; modelPivot.add(mesh);
     window._skullMesh=mesh; invalidate();
   });

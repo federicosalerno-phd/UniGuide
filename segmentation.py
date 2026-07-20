@@ -391,7 +391,7 @@ def _reveal_predictor_class():
                         # the end.
                         if self.reveal_cb is not None:
                             try:
-                                self.reveal_cb(sl, predicted_logits, n_predictions)
+                                self.reveal_cb(sl, data, predicted_logits, n_predictions)
                             except Exception as ex:
                                 log("reveal hook disabled:", ex)
                                 self.reveal_cb = None
@@ -433,53 +433,60 @@ def _save_cloud_png(world, debug_dir, step):
 
 
 def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
-    """Build the reveal callback, called per tile: stream ONLY the NEW mandible voxels of the tile
-    just computed, as 3D points in CT world coordinates (a POINTS line). The UI accumulates them and
-    fades each batch in, so the mandible materialises continuously and smoothly. Cheap (patch-local,
-    no meshing); the solid STL is built once at the very end."""
+    """Build the reveal callback, called per tile: as the sliding window advances up the volume it
+    emits real CT SLICES (the CT at that level with the mandible painted red) about every 2.5 mm,
+    each with its four world corners, so the UI sweeps genuine CT slices up through 3D space, layer
+    by layer, and the red mandible pixels stack into the 3D mandible. No meshing; the solid STL is
+    built once at the very end."""
     sp_w = np.array([float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1])])  # sitk (x,y,z)
     origin = np.array(crop_img.GetOrigin(), float)
     D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
-    state = {"sent": None, "n": 0}
+    zstep = max(2, int(round(2.5 / float(cm.spacing[1]))))          # a CT slice every ~2.5 mm of working Z
+    state = {"levels": None, "emitted": set(), "count": 0}
 
-    def _to_world(gy, gz, gx):
-        idx = np.column_stack([gx, gy, gz]).astype(float)           # sitk voxel (i=X', j=Y', k=Z')
-        return (origin + (idx * sp_w) @ D.T).astype(np.float32)
+    def _corner(cx, cy, cz):                                        # one (X',Y',Z') voxel -> world mm
+        return origin + (np.array([cx, cy, cz], float) * sp_w) @ D.T
 
-    def cb(sl, logits, npred):
+    def _emit(data, logits, npred, zc):
+        try:
+            from PIL import Image
+            import io as _io, base64 as _b64
+            ct = data[0, :, zc, :].to("cpu").numpy().astype(np.float32)          # (Y', X') z-scored CT
+            seg = (logits[:, :, zc, :] / npred[:, zc, :].clamp(min=1e-4)).argmax(0)
+            mand = ((seg == 2) & (npred[:, zc, :] > 0.5)).to("cpu").numpy()
+            gi = (np.clip((ct + 1.0) / 4.0, 0, 1) * 255).astype(np.uint8)        # fixed window on the z-scored CT
+            ny, nx = ct.shape
+            rgba = np.zeros((ny, nx, 4), np.uint8)
+            rgba[..., 0] = gi; rgba[..., 1] = gi; rgba[..., 2] = gi
+            rgba[..., 3] = np.where(gi > 70, 60, 0).astype(np.uint8)             # faint CT haze so slices stack see-through
+            rgba[mand] = (255, 74, 42, 255)                                      # mandible: opaque red
+            im = Image.fromarray(rgba, "RGBA")
+            if im.width > 256:
+                im = im.resize((256, max(1, int(256 * im.height / im.width))))
+            buf = _io.BytesIO(); im.save(buf, "PNG")
+            crn = [_corner(0, 0, zc), _corner(nx - 1, 0, zc), _corner(nx - 1, ny - 1, zc), _corner(0, ny - 1, zc)]
+            cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
+            log("SLICE %s %s" % (cs, _b64.b64encode(buf.getvalue()).decode()))
+            state["count"] += 1
+            if debug_dir and state["count"] % 5 == 0:
+                try:
+                    im.convert("RGB").save(os.path.join(debug_dir, "slice_%02d.png" % state["count"]))
+                except Exception:
+                    pass
+        except Exception as e:
+            log("slice preview skipped:", e)
+
+    def cb(sl, data, logits, npred):
         # logits: (C, Y', Z', X') working grid; npred weights; sl the tile slicer in working axes.
-        if state["sent"] is None:
-            state["sent"] = np.zeros(tuple(int(x) for x in logits.shape[1:]), dtype=bool)   # (Y', Z', X')
-        ys, zs, xs = sl[1], sl[2], sl[3]                              # this tile's patch
-        subn = npred[ys, zs, xs]
-        seg = (logits[:, ys, zs, xs] / subn.clamp(min=1e-4)).argmax(0)
-        mand = ((seg == 2) & (subn > 0.5)).to("cpu").numpy()         # patch mandible voxels
-        if not mand.any():
-            return
-        py, pz, px = np.where(mand)
-        gy = py + ys.start; gz = pz + zs.start; gx = px + xs.start   # global working indices
-        fresh = ~state["sent"][gy, gz, gx]                           # only voxels not sent before
-        if not fresh.any():
-            return
-        gy, gz, gx = gy[fresh], gz[fresh], gx[fresh]
-        state["sent"][gy, gz, gx] = True
-        if len(gy) > 4000:                                           # cap the per-tile payload
-            k = np.linspace(0, len(gy) - 1, 4000).astype(np.int64)
-            gy, gz, gx = gy[k], gz[k], gx[k]
-        world = _to_world(gy, gz, gx)                               # world mm, same frame as the final STL
-        import base64 as _b64
-        log("POINTS %d %s" % (len(world), _b64.b64encode(world.tobytes()).decode()))
-        # disk debug: a 3D scatter of the whole mandible so far, every so often
-        state["n"] += 1
-        if debug_dir and state["n"] % 6 == 0:
-            try:
-                ay, az, ax = np.where(state["sent"])                # (Y', Z', X') indices of all sent voxels
-                if len(ay) > 8000:
-                    k = np.linspace(0, len(ay) - 1, 8000).astype(np.int64)
-                    ay, az, ax = ay[k], az[k], ax[k]
-                _save_cloud_png(_to_world(ay, az, ax), debug_dir, state["n"])
-            except Exception:
-                pass
+        if state["levels"] is None:
+            nz = int(logits.shape[2])
+            state["levels"] = list(range(zstep // 2, nz, zstep))     # the Z levels we show, evenly spaced
+        for zc in state["levels"]:                                   # emit any level now finalized, not yet shown
+            if zc in state["emitted"] or state["count"] >= 60:
+                continue
+            if float(npred[:, zc, :].max()) > 0.5:                   # this slice has been segmented
+                state["emitted"].add(zc)
+                _emit(data, logits, npred, zc)
 
     return cb
 
