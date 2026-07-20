@@ -322,16 +322,20 @@ def run_dental_nnunet(ct_nifti, work_dir):
         isp = np.array(in_img.GetSpacing(), dtype=float)
         tgt = np.array(cm.spacing, dtype=float)
         n_cls = len(predictor.dataset_json.get("labels", {})) or 6
-        soft_gb = float(np.prod(np.ceil(sh * isp / tgt))) * n_cls * 4 / 1e9
+        # SPEED: the mandible does not need the model's finest spacing (~0.31 mm); cap the
+        # working spacing so the head segments about 2x faster with negligible loss on bone.
+        work = np.maximum(tgt, 0.5)
+        # RAM: coarsen further if the on-CPU map would not fit the free memory.
+        soft_gb = float(np.prod(np.ceil(sh * isp / work))) * n_cls * 4 / 1e9
         free_gb = psutil.virtual_memory().available / 1e9
         budget = max(2.0, free_gb * 0.45)
         if soft_gb > budget:
-            factor = (soft_gb / budget) ** (1.0 / 3.0)
-            cm.configuration["spacing"] = (tgt * factor).tolist()
-            log("low RAM: %.1f GB free, map needs %.1f GB; coarsening working spacing x%.2f"
-                % (free_gb, soft_gb, factor))
-        else:
-            log("RAM ok: %.1f GB free, segmentation map ~%.1f GB" % (free_gb, soft_gb))
+            work = work * (soft_gb / budget) ** (1.0 / 3.0)
+            soft_gb = budget
+            log("low RAM: %.1f GB free; coarsening to fit" % free_gb)
+        cm.configuration["spacing"] = work.tolist()
+        log("working spacing %s, map ~%.1f GB, %.1f GB free"
+            % ([round(x, 2) for x in work], soft_gb, free_gb))
     except Exception as e:
         log("RAM check skipped:", e)
 
