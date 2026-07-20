@@ -367,7 +367,7 @@ def _reveal_predictor_class():
                                                 value_scaling_factor=10, device=results_device)
                 else:
                     gaussian = 1
-                every = max(1, len(slicers) // 18)      # aim for ~18 progressive reveals across the run
+                every = max(1, len(slicers) // 30)      # ~30 slice previews across the run, so it flows
                 with tqdm(desc=None, total=len(slicers), disable=not self.allow_tqdm) as pbar:
                     while True:
                         item = queue.get()
@@ -382,9 +382,9 @@ def _reveal_predictor_class():
                         n_predictions[sl[1:]] += gaussian
                         queue.task_done()
                         pbar.update()
-                        # Reveal the CURRENT best mandible often (every ~1/18 of the tiles) so it
-                        # forms continuously in the UI. Tiles run bottom to top, so the mandible
-                        # fills in early; later skull tiles add nothing and the callback skips them.
+                        # Send the CURRENT mandible as a 3D point cloud often (~1/30 of the tiles)
+                        # so it forms live in 3D. No meshing here: the solid is built once at the
+                        # very end, which is far cheaper than re-meshing every step.
                         if self.reveal_cb is not None and (pbar.n % every == 0):
                             try:
                                 self.reveal_cb(predicted_logits, n_predictions)
@@ -405,62 +405,64 @@ def _reveal_predictor_class():
     return RevealPredictor
 
 
-def _save_grow_png(mand_w, debug_dir, step):
-    """Debug: a coronal MIP of the growing mandible mask, so the build is visible on disk too."""
+def _save_cloud_png(world, debug_dir, step):
+    """Debug: a 3D scatter of the forming mandible point cloud, so the build is visible on disk too."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         os.makedirs(debug_dir, exist_ok=True)
-        mip = mand_w.max(axis=0)                         # (Y',Z',X') -> (Z',X'), Z up
-        fig, ax = plt.subplots(figsize=(4, 4))
-        ax.imshow(mip, cmap="magma", origin="lower", interpolation="nearest")
-        ax.set_title("mandible grow, step %d" % step)
+        fig = plt.figure(figsize=(4, 4))
+        ax = fig.add_subplot(111, projection="3d")
+        ax.scatter(world[:, 0], world[:, 1], world[:, 2], s=1, c="#dd5555")
+        ax.set_title("mandible cloud, step %d" % step)
+        try:
+            ax.set_box_aspect((np.ptp(world[:, 0]) or 1, np.ptp(world[:, 1]) or 1, np.ptp(world[:, 2]) or 1))
+        except Exception:
+            pass
+        ax.view_init(elev=15, azim=-75)
         ax.axis("off")
-        p = os.path.join(debug_dir, "grow_%02d.png" % step)
-        fig.savefig(p, dpi=70, bbox_inches="tight")
+        fig.savefig(os.path.join(debug_dir, "cloud_%02d.png" % step), dpi=70)
         plt.close(fig)
-        log("GROW_PNG %s" % p)
     except Exception as e:
-        log("grow png skipped:", e)
+        log("cloud png skipped:", e)
 
 
 def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
-    """Build the reveal callback: mesh the CURRENT best mandible from everything accumulated so
-    far (touched voxels only), in the CT physical frame, and emit an STL_GROW line the UI turns
-    into the growing 3D mandible. Called often, so it skips when nothing new was added."""
-    os.makedirs(grow_dir, exist_ok=True)
-    sp_w = (float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1]))  # working (y,z,x) -> sitk (x,y,z)
-    origin = crop_img.GetOrigin()
-    direction = crop_img.GetDirection()
+    """Build the reveal callback: send the CURRENT mandible as a 3D POINT CLOUD (its voxel centres
+    in CT world coordinates) on a POINTS line, so the UI shows it forming in 3D with NO meshing at
+    all (cheap). The solid STL is built once at the very end. Called often, so it skips when nothing
+    new was added and downsamples so each update stays small."""
+    sp_w = np.array([float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1])])  # sitk (x,y,z)
+    origin = np.array(crop_img.GetOrigin(), float)
+    D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
     state = {"step": 0, "last_vox": 0}
 
     def cb(logits, npred):
         # logits: (C, Y', Z', X') working grid, still un-normalized; npred: (Y', Z', X') weights.
         touched = npred > 0.5
         seg = (logits / npred.clamp(min=1e-4)).argmax(0)          # (Y', Z', X')
-        mand = (seg == 2) & touched
-        vox = int(mand.sum().item())
-        # only re-mesh when the mandible actually grew, so frequent calls stay cheap
-        if vox < 200 or vox < state["last_vox"] * 1.03:
+        mand = ((seg == 2) & touched).to("cpu").numpy()           # (Y', Z', X') bool
+        vox = int(mand.sum())
+        if vox < 200 or vox < state["last_vox"] * 1.03:           # nothing meaningfully new -> skip
             return
         state["last_vox"] = vox
-        m = mand.to("cpu").numpy()                                # (Y', Z', X') bool
-        state["step"] += 1
-        arr = np.ascontiguousarray(m.transpose(transpose_back)).astype(np.uint8)  # -> (Z', Y', X') for sitk
-        arr = clean_components(arr, largest_only=True).astype(np.uint8)           # show only the mandible, not stray blobs
-        img_w = sitk.GetImageFromArray(arr)
-        img_w.SetSpacing(sp_w)
-        img_w.SetOrigin(origin)
-        img_w.SetDirection(direction)
-        mesh = mask_to_mesh(arr > 0, img_w, smooth_iter=4)
-        if mesh is None:
+        arr = np.ascontiguousarray(mand.transpose(transpose_back))            # -> (Z', Y', X') sitk order
+        arr = clean_components(arr, largest_only=True)                        # only the mandible, no stray blobs
+        kz, ky, kx = np.where(arr)
+        n = len(kz)
+        if n < 100:
             return
-        path = os.path.join(grow_dir, "Mandible_grow_%d.stl" % state["step"])
-        mesh.export(path)
-        log("STL_GROW Mandible %s %d %d" % (path, state["step"], state["step"]))
+        if n > 6000:                                              # downsample so each update stays small
+            sel = np.linspace(0, n - 1, 6000).astype(np.int64)
+            kz, ky, kx = kz[sel], ky[sel], kx[sel]
+        idx = np.column_stack([kx, ky, kz]).astype(float)         # (i, j, k) sitk voxel indices
+        world = (origin + (idx * sp_w) @ D.T).astype(np.float32)  # (N, 3) world mm, same frame as the final STL
+        state["step"] += 1
+        import base64 as _b64
+        log("POINTS %d %s" % (len(world), _b64.b64encode(world.tobytes()).decode()))
         if debug_dir:
-            _save_grow_png(m, debug_dir, state["step"])
+            _save_cloud_png(world, debug_dir, state["step"])
 
     return cb
 
@@ -499,30 +501,11 @@ def run_dental_nnunet(ct_nifti, work_dir):
         predictor = nnUNetPredictor(**_args)
         predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
 
-    # If the scan runs well below the jaw (a COLLO-TORACE protocol), keep only the slab around the
-    # dental arch for the fine pass and the growing preview. The teeth are the densest voxels in the
-    # body (enamel ~2000-3000 HU) and are never confused with spine or ribs, so they locate the
-    # mandible robustly with NO extra inference and WITHOUT needing to know which way is up. The fine
-    # pass then never sees neck/thorax bone the dental model would mislabel as mandible.
+    # Run the fine pass on the whole bone crop. The mandible is recovered as the largest label-2
+    # component (out-of-distribution neck/thorax bone the model mislabels stays as smaller pieces
+    # and is dropped), so no jaw pre-crop is needed; an earlier teeth-slab cropped some mandibles
+    # in half and is gone.
     fine_nifti, fine_img, paste = cropped, crop_img, None
-    sz, sp = crop_img.GetSize(), crop_img.GetSpacing()
-    if sz[2] * sp[2] > 210.0:
-        try:
-            arr = sitk.GetArrayFromImage(crop_img)                       # (z,y,x), Hounsfield units
-            dense = (arr > 1500).reshape(arr.shape[0], -1).sum(axis=1)   # per-slice count of teeth-dense voxels
-            if int(dense.max()) > 40:
-                zc = int(np.argmax(dense))                               # the occlusal (dental) slice
-                keep = int(105.0 / sp[2])                                # +-105 mm spans chin to condyles either way
-                Z0, Z1 = max(0, zc - keep), min(sz[2], zc + keep)
-                if Z1 - Z0 < sz[2]:
-                    sub = crop_img[:, :, Z0:Z1]
-                    fine_nifti = os.path.join(work_dir, "ct_head.nii.gz")
-                    sitk.WriteImage(sub, fine_nifti)
-                    fine_img = sub
-                    paste = (Z0, 0, 0)                                   # numpy (z,y,x) offset back into the full crop
-                    log("kept the jaw slab around the teeth:", sub.GetSize(), "from", sz)
-        except Exception as e:
-            log("jaw slab skipped:", e)
     shutil.copyfile(fine_nifti, os.path.join(in_dir, "CASE_0000.nii.gz"))
 
     # RAM-aware resolution: the on-CPU segmentation map is (classes x resampled-volume). On a

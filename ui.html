@@ -4366,6 +4366,7 @@ function segRecommendSeries(){            // auto-pick the best series for the c
     let score=0;
     if(region==='head'){ if(isLeg)return; if(/massicc|collo|facial|testa|cranio|\bmf\b|\btc\b|\bhead\b/.test(f))score+=60; if(/osso|bone/.test(d))score+=100; if(/massicc|collo/.test(d))score+=20; }
     else { if(!isLeg)return; if(/angio/.test(d))score+=100; if(/arti|inferior|gamb/.test(d))score+=20; }
+    if(/coronal|sagittal|\bcor\b|\bsag\b|reformat|\bmpr\b|ricostr/.test(d)) score-=140;   // reformats segment far worse than the native axial acquisition
     score += Math.max(0,5-thk)*12;        // finer slices are better for bone
     score += Math.min(n,1500)/150;
     if(score>bestScore){ bestScore=score; best=i; }
@@ -4410,34 +4411,33 @@ function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,
 // Progressive mandible: a light preview mesh that grows bottom to top WHILE the model runs. It is
 // purely visual; the authoritative mandible is loaded once at the end by ingestModel. Each chunk
 // keeps the SAME anchor so the mandible grows in place instead of sliding.
-let _growPreview=null,_growOff=null,_growHidDemo=false;
-function segGrowStl(path,k,n){
+// Progressive mandible: shown live as a 3D POINT CLOUD while it segments (no meshing at all, so
+// it is cheap and never stutters). The backend sends the current mandible voxels in world coords;
+// the solid mesh is built once at the end and replaces the cloud.
+let _growCloud=null,_growHidDemo=false;
+function segPoints(b64){
   if(segState.region!=='head') return;
-  if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
-    if(!d||d.error||!d.positions||d.positions.length<9) return;
-    if(!renderer){ initGL(); loop(); }
-    if(!modelPivot) return;
-    const g=new THREE.BufferGeometry();
-    g.setAttribute('position',new THREE.Float32BufferAttribute(d.positions,3));
-    g.computeVertexNormals(); g.computeBoundingBox();
-    if(!_growPreview){ const c=new THREE.Vector3(); g.boundingBox.getCenter(c); _growOff=c;
-      g.translate(-c.x,-c.y,-c.z);
-      // clear whatever was there: hide the demo arch (restorable on error) or drop a stale mandible
-      _growHidDemo=false;
-      if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
-      disposeMesh(bridge); bridge=null;
-      if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
-      _growPreview=new THREE.Mesh(g,M_bone()); _growPreview.name='growPreview'; modelPivot.add(_growPreview);
-    } else { g.translate(-_growOff.x,-_growOff.y,-_growOff.z);      // same anchor -> grows in place
-      _growPreview.geometry.dispose(); _growPreview.geometry=g; }
-    fitObject(_growPreview);                                        // keep the growing mandible framed
-    if($('stTri'))$('stTri').textContent=Math.round(d.positions.length/9).toLocaleString();
-    $('segStatus').textContent='building the mandible';            // the bar is driven by the tile counter
-    invalidate();
-  });
+  let bin; try{ bin=atob(b64); }catch(x){ return; }
+  const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
+  const pos=new Float32Array(u.buffer);                 // N*3 world coordinates (same frame as the final STL)
+  if(pos.length<9) return;
+  if(!renderer){ initGL(); loop(); }
+  if(!modelPivot) return;
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(pos,3)); g.computeBoundingBox();
+  if(!_growCloud){
+    _growHidDemo=false;
+    if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
+    disposeMesh(bridge); bridge=null;
+    if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
+    const mat=new THREE.PointsMaterial({color:0xff5a4a,size:1.5,sizeAttenuation:true});
+    _growCloud=new THREE.Points(g,mat); _growCloud.name='growCloud'; modelPivot.add(_growCloud); isDemo=false;
+  } else { _growCloud.geometry.dispose(); _growCloud.geometry=g; }
+  fitObject(_growCloud);                                 // keep the forming mandible framed
+  if($('stTri'))$('stTri').textContent=Math.round(pos.length/3).toLocaleString()+' pts';
+  $('segStatus').textContent='segmenting the mandible';
+  invalidate();
 }
-function segClearGrow(restoreDemo){ if(_growPreview){ disposeMesh(_growPreview); _growPreview=null; } _growOff=null;
+function segClearGrow(restoreDemo){ if(_growCloud){ disposeMesh(_growCloud); _growCloud=null; }
   if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false; }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
@@ -4540,8 +4540,8 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
-      const sg=e.text.match(/\bSTL_GROW\s+\S+\s+(.+?)\s+(\d+)\s+(\d+)\s*$/);   // <name> <path> <k> <n>
-      if(sg){ segGrowStl(sg[1].trim(), +sg[2], +sg[3]); return; }
+      const pt=e.text.match(/\bPOINTS\s+\d+\s+(\S+)/);   // POINTS <n> <base64 world coords>
+      if(pt){ segPoints(pt[1]); return; }
       const sr=e.text.match(/\bSTL_READY (\S+) (.+)/);
       if(sr){ if(/Mandible|Fibula/.test(sr[1])) segProg(92); segShowStl(sr[1], sr[2].trim()); return; }
       const ph=e.text.match(/\bPHASE (.+)/);
