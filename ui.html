@@ -4398,14 +4398,15 @@ function segAnim(){ segA.on=true; let last=performance.now();
   (function f(now){ const dt=Math.min(0.05,(now-last)/1000); last=now;
     segA.shown+=(Math.max(segA.shown,segA.target)-segA.shown)*(1-Math.exp(-3.2*dt));   // ~300 ms ease
     const bar=$('segBar'); if(bar) bar.style.width=Math.max(2,segA.shown).toFixed(2)+'%';
-    if(segA.shown<99.5||segA.target<100){ segA.raf=requestAnimationFrame(f); } else { segA.on=false; }
+    if(Math.abs(segA.shown-segA.target)>0.05){ segA.raf=requestAnimationFrame(f); }
+    else { segA.shown=segA.target; if(bar)bar.style.width=Math.max(2,segA.shown).toFixed(2)+'%'; segA.on=false; }  // idle until segProg raises the target again
   })(last); }
 function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,raf:0,on:false}; const bar=$('segBar'); if(bar)bar.style.width='2%'; }
 
 // Progressive mandible: a light preview mesh that grows bottom to top WHILE the model runs. It is
 // purely visual; the authoritative mandible is loaded once at the end by ingestModel. Each chunk
 // keeps the SAME anchor so the mandible grows in place instead of sliding.
-let _growPreview=null,_growOff=null;
+let _growPreview=null,_growOff=null,_growHidDemo=false;
 function segGrowStl(path,k,n){
   if(segState.region!=='head') return;
   if(!(B&&B.seg_read_stl)) return;
@@ -4418,18 +4419,22 @@ function segGrowStl(path,k,n){
     g.computeVertexNormals(); g.computeBoundingBox();
     if(!_growPreview){ const c=new THREE.Vector3(); g.boundingBox.getCenter(c); _growOff=c;
       g.translate(-c.x,-c.y,-c.z);
-      if(boneMesh&&isDemo) boneMesh.visible=false;                 // tuck the demo arch away
+      // clear whatever was there: hide the demo arch (restorable on error) or drop a stale mandible
+      _growHidDemo=false;
+      if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
+      disposeMesh(bridge); bridge=null;
+      if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
       _growPreview=new THREE.Mesh(g,M_bone()); _growPreview.name='growPreview'; modelPivot.add(_growPreview);
-      fitObject(_growPreview);
     } else { g.translate(-_growOff.x,-_growOff.y,-_growOff.z);      // same anchor -> grows in place
       _growPreview.geometry.dispose(); _growPreview.geometry=g; }
+    fitObject(_growPreview);                                        // keep the growing mandible framed
     if($('stTri'))$('stTri').textContent=Math.round(d.positions.length/9).toLocaleString();
     $('segStatus').textContent=(k<n?'building the mandible ':'mandible ready ')+k+'/'+n;
     segProg(15+70*k/Math.max(1,n)); invalidate();
   });
 }
-function segClearGrow(){ if(_growPreview){ disposeMesh(_growPreview); _growPreview=null; } _growOff=null;
-  if(boneMesh&&isDemo) boneMesh.visible=true; }
+function segClearGrow(restoreDemo){ if(_growPreview){ disposeMesh(_growPreview); _growPreview=null; } _growOff=null;
+  if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false; }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
   B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
@@ -4531,8 +4536,6 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
-      const fr=e.text.match(/\bFRAME\s+([\d.]+)/);
-      if(fr){ segState.frameR=parseFloat(fr[1]); return; }
       const sg=e.text.match(/\bSTL_GROW\s+\S+\s+(.+?)\s+(\d+)\s+(\d+)\s*$/);   // <name> <path> <k> <n>
       if(sg){ segGrowStl(sg[1].trim(), +sg[2], +sg[3]); return; }
       const sr=e.text.match(/\bSTL_READY (\S+) (.+)/);
@@ -4545,9 +4548,9 @@ function onSegEvent(s){
       if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='copying the scan '+p+'%'; segProg(p*0.05); return; }
       if(/Predicting|preprocess/i.test(e.text)){ $('segStatus').textContent='preparing the model'; return; }
     }
-    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); segAnimReset(); segClearGrow(); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); segAnimReset(); segClearGrow(true); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
-      segState.running=false; $('segStartBtn').disabled=false; segProg(100); segClearGrow(); segBusy(false);
+      segState.running=false; $('segStartBtn').disabled=false; segProg(100); segClearGrow(false); segBusy(false);
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
       if(!r||!r.ok){ const em=(r&&r.error)||'no result';
         if(/LOW_MEMORY|RAM|out of memory|workers died/i.test(em)){ $('segStatus').textContent='not enough free memory'; segLog('Not enough free RAM for this scan at full resolution. Close other apps, the browser especially, then try again. You have plenty of RAM total, it is just busy right now.'); }
@@ -4562,7 +4565,7 @@ function segShowStl(name, path){
   if(name==='MandibularCanal'){ segShowCanal(path); return; }   // nerve overlay, not the bone path
   const primary = (segState.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
   if(name!==primary) return;                 // load the main bone live so it appears in 3D
-  segClearGrow();                            // drop the growing preview; the authoritative mesh takes over
+  segClearGrow(false);                        // drop the preview; the real mesh loads next, no demo flash
   B.seg_read_stl(path, function(s){ let d={}; try{d=JSON.parse(s);}catch(x){}
     if(!d||d.error)return;
     if(segState.region==='head') ingestModel(d.positions,name); else ingestFibula(d.positions,name); });
@@ -4578,6 +4581,9 @@ function segLoadResult(r){
     let d={}; try{d=JSON.parse(s);}catch(x){}
     if(d.error){ segLog('Load failed: '+d.error); return; }
     ingest(d.positions, key);
+    // ingestModel just re-centered the mandible (and cleared any old canal), so re-add the nerve
+    // canal aligned to it. Without this the redundant final ingest would leave the canal gone.
+    if(r.region==='head' && stls['MandibularCanal']) segShowCanal(stls['MandibularCanal']);
     const others=Object.keys(stls).filter(function(k){return k!==key;});
     segLog('Loaded '+key+'. Also produced: '+(others.join(', ')||'none'));
     closeSegmentation(); toast(key+' segmented and loaded.');

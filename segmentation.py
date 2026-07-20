@@ -430,13 +430,14 @@ def _save_grow_png(mand_w, debug_dir, step):
         log("grow png skipped:", e)
 
 
-def _make_reveal(crop_img, grow_dir, cm, transpose_back, nominal, debug_dir=None):
+def _make_reveal(crop_img, grow_dir, cm, transpose_back, patch_z, nominal, debug_dir=None):
     """Build the reveal callback: mesh the mandible in the finalized Z-band so far, in the CT
     physical frame, and emit an STL_GROW line the UI turns into the growing 3D mandible."""
     os.makedirs(grow_dir, exist_ok=True)
     sp_w = (float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1]))  # working (y,z,x) -> sitk (x,y,z)
     origin = crop_img.GetOrigin()
     direction = crop_img.GetDirection()
+    pz = int(patch_z)
     state = {"step": 0, "mand": None}
 
     def cb(logits, npred, frontier, ascending):
@@ -444,7 +445,11 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, nominal, debug_dir=None
         if state["mand"] is None:
             state["mand"] = np.zeros(tuple(int(x) for x in logits.shape[1:]), dtype=bool)  # (Y',Z',X')
         Zw = state["mand"].shape[1]
-        lo, hi = (0, int(frontier)) if ascending else (int(frontier), Zw)
+        # Only the band that is fully accumulated is safe to reveal. Tiles cover [start, start+patch)
+        # upward, so ascending (frontier = a new higher start, all lower tiles done) makes [0, frontier)
+        # final; descending (frontier = a new lower start) only makes [frontier + patch, Zw) final,
+        # because tiles down to frontier still write up into [frontier, frontier+patch).
+        lo, hi = (0, int(frontier)) if ascending else (int(frontier) + pz, Zw)
         if hi <= lo:
             return
         nd = npred[:, lo:hi, :].clamp(min=1e-4)
@@ -488,10 +493,6 @@ def run_dental_nnunet(ct_nifti, work_dir):
     cropped = _crop_to_bone(ct_nifti, os.path.join(work_dir, "ct_bone.nii.gz"))
     shutil.copyfile(cropped, os.path.join(in_dir, "CASE_0000.nii.gz"))
     crop_img = sitk.ReadImage(cropped)
-    # tell the UI how big the anatomy is, so it frames the camera once and holds it steady while
-    # the mandible grows (half the crop's space diagonal, in mm)
-    _ext = np.array(crop_img.GetSize(), float) * np.array(crop_img.GetSpacing(), float)
-    log("FRAME %.1f" % (0.5 * float(np.linalg.norm(_ext))))
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log("dental nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
     _args = dict(tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
@@ -533,9 +534,12 @@ def run_dental_nnunet(ct_nifti, work_dir):
         free_gb = psutil.virtual_memory().available / 1e9
         budget = max(1.5, free_gb * 0.35)   # leave RAM for the model, the copies and the mesh
         if soft_gb > budget:
-            work = np.minimum(work * (soft_gb / budget) ** (1.0 / 3.0), 0.9)  # keep mandible usable
+            # coarsen to fit, but never past 0.9 mm (keep the mandible usable) and never finer than
+            # the data's own spacing on any axis (the cap must not upsample a coarse through-plane).
+            work = np.maximum(np.minimum(work * (soft_gb / budget) ** (1.0 / 3.0), 0.9), isp_w)
             soft_gb = float(np.prod(sh * isp) / np.prod(work)) * n_cls * 4 / 1e9
-            log("low RAM: %.1f GB free; coarsening to fit" % free_gb)
+            log("low RAM: %.1f GB free; coarsening to %s (map ~%.1f GB)"
+                % (free_gb, [round(x, 2) for x in work], soft_gb))
         cm.configuration["spacing"] = work.tolist()
         log("working spacing %s, map ~%.1f GB, %.1f GB free"
             % ([round(x, 2) for x in work], soft_gb, free_gb))
@@ -549,9 +553,10 @@ def run_dental_nnunet(ct_nifti, work_dir):
             D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
             predictor.z_ascending = bool(D[2, 2] >= 0)          # reveal toward anatomical superior
             tb = list(predictor.plans_manager.transpose_backward)
+            pz = int(predictor.configuration_manager.patch_size[1])   # working-Z patch length
             dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug", "segmentation")
             predictor.reveal_cb = _make_reveal(crop_img, grow_dir, predictor.configuration_manager,
-                                               tb, 5, debug_dir=dbg)
+                                               tb, pz, 5, debug_dir=dbg)
             log("progressive reveal on (z_ascending=%s)" % predictor.z_ascending)
         except Exception as e:
             log("reveal wiring skipped:", e)
