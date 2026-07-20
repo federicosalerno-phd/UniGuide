@@ -371,7 +371,6 @@ def _reveal_predictor_class():
                                                 value_scaling_factor=10, device=results_device)
                 else:
                     gaussian = 1
-                every = max(1, len(slicers) // 30)      # ~30 slice previews across the run, so it flows
                 with tqdm(desc=None, total=len(slicers), disable=not self.allow_tqdm) as pbar:
                     while True:
                         item = queue.get()
@@ -386,12 +385,13 @@ def _reveal_predictor_class():
                         n_predictions[sl[1:]] += gaussian
                         queue.task_done()
                         pbar.update()
-                        # Send the CURRENT mandible as a 3D point cloud often (~1/30 of the tiles)
-                        # so it forms live in 3D. No meshing here: the solid is built once at the
-                        # very end, which is far cheaper than re-meshing every step.
-                        if self.reveal_cb is not None and (pbar.n % every == 0):
+                        # After EACH tile, stream only the NEW mandible voxels in that tile as 3D
+                        # points, so the mandible materialises continuously and smoothly rather than
+                        # in big jumps. Cheap (patch-local), no meshing; the solid is built once at
+                        # the end.
+                        if self.reveal_cb is not None:
                             try:
-                                self.reveal_cb(predicted_logits, n_predictions)
+                                self.reveal_cb(sl, predicted_logits, n_predictions)
                             except Exception as ex:
                                 log("reveal hook disabled:", ex)
                                 self.reveal_cb = None
@@ -433,40 +433,53 @@ def _save_cloud_png(world, debug_dir, step):
 
 
 def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
-    """Build the reveal callback: send the CURRENT mandible as a 3D POINT CLOUD (its voxel centres
-    in CT world coordinates) on a POINTS line, so the UI shows it forming in 3D with NO meshing at
-    all (cheap). The solid STL is built once at the very end. Called often, so it skips when nothing
-    new was added and downsamples so each update stays small."""
+    """Build the reveal callback, called per tile: stream ONLY the NEW mandible voxels of the tile
+    just computed, as 3D points in CT world coordinates (a POINTS line). The UI accumulates them and
+    fades each batch in, so the mandible materialises continuously and smoothly. Cheap (patch-local,
+    no meshing); the solid STL is built once at the very end."""
     sp_w = np.array([float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1])])  # sitk (x,y,z)
     origin = np.array(crop_img.GetOrigin(), float)
     D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
-    state = {"step": 0, "last_vox": 0}
+    state = {"sent": None, "n": 0}
 
-    def cb(logits, npred):
-        # logits: (C, Y', Z', X') working grid, still un-normalized; npred: (Y', Z', X') weights.
-        touched = npred > 0.5
-        seg = (logits / npred.clamp(min=1e-4)).argmax(0)          # (Y', Z', X')
-        mand = ((seg == 2) & touched).to("cpu").numpy()           # (Y', Z', X') bool
-        vox = int(mand.sum())
-        if vox < 200 or vox < state["last_vox"] * 1.03:           # nothing meaningfully new -> skip
+    def _to_world(gy, gz, gx):
+        idx = np.column_stack([gx, gy, gz]).astype(float)           # sitk voxel (i=X', j=Y', k=Z')
+        return (origin + (idx * sp_w) @ D.T).astype(np.float32)
+
+    def cb(sl, logits, npred):
+        # logits: (C, Y', Z', X') working grid; npred weights; sl the tile slicer in working axes.
+        if state["sent"] is None:
+            state["sent"] = np.zeros(tuple(int(x) for x in logits.shape[1:]), dtype=bool)   # (Y', Z', X')
+        ys, zs, xs = sl[1], sl[2], sl[3]                              # this tile's patch
+        subn = npred[ys, zs, xs]
+        seg = (logits[:, ys, zs, xs] / subn.clamp(min=1e-4)).argmax(0)
+        mand = ((seg == 2) & (subn > 0.5)).to("cpu").numpy()         # patch mandible voxels
+        if not mand.any():
             return
-        state["last_vox"] = vox
-        arr = np.ascontiguousarray(mand.transpose(transpose_back))            # -> (Z', Y', X') sitk order
-        arr = clean_components(arr, largest_only=False, rel=0.40)             # both mandible segments, no stray blobs
-        kz, ky, kx = np.where(arr)
-        n = len(kz)
-        if n < 100:
+        py, pz, px = np.where(mand)
+        gy = py + ys.start; gz = pz + zs.start; gx = px + xs.start   # global working indices
+        fresh = ~state["sent"][gy, gz, gx]                           # only voxels not sent before
+        if not fresh.any():
             return
-        if n > 6000:                                              # downsample so each update stays small
-            sel = np.linspace(0, n - 1, 6000).astype(np.int64)
-            kz, ky, kx = kz[sel], ky[sel], kx[sel]
-        idx = np.column_stack([kx, ky, kz]).astype(float)         # (i, j, k) sitk voxel indices
-        world = (origin + (idx * sp_w) @ D.T).astype(np.float32)  # (N, 3) world mm, same frame as the final STL
-        state["step"] += 1
+        gy, gz, gx = gy[fresh], gz[fresh], gx[fresh]
+        state["sent"][gy, gz, gx] = True
+        if len(gy) > 4000:                                           # cap the per-tile payload
+            k = np.linspace(0, len(gy) - 1, 4000).astype(np.int64)
+            gy, gz, gx = gy[k], gz[k], gx[k]
+        world = _to_world(gy, gz, gx)                               # world mm, same frame as the final STL
         import base64 as _b64
         log("POINTS %d %s" % (len(world), _b64.b64encode(world.tobytes()).decode()))
-        if debug_dir:
-            _save_cloud_png(world, debug_dir, state["step"])
+        # disk debug: a 3D scatter of the whole mandible so far, every so often
+        state["n"] += 1
+        if debug_dir and state["n"] % 6 == 0:
+            try:
+                ay, az, ax = np.where(state["sent"])                # (Y', Z', X') indices of all sent voxels
+                if len(ay) > 8000:
+                    k = np.linspace(0, len(ay) - 1, 8000).astype(np.int64)
+                    ay, az, ax = ay[k], az[k], ax[k]
+                _save_cloud_png(_to_world(ay, az, ax), debug_dir, state["n"])
+            except Exception:
+                pass
 
     return cb
 
@@ -491,7 +504,7 @@ def run_dental_nnunet(ct_nifti, work_dir):
     crop_img = sitk.ReadImage(cropped)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log("dental nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
-    _args = dict(tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
+    _args = dict(tile_step_size=0.7, use_gaussian=True, use_mirroring=False,   # wider step = fewer tiles = faster
                  perform_everything_on_device=(dev.type == "cuda" and False),
                  device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
     use_fold = int(fold) if str(fold).isdigit() else fold
@@ -528,7 +541,7 @@ def run_dental_nnunet(ct_nifti, work_dir):
         # bone surface. Floor it PER AXIS at the data's own spacing so no axis is ever upsampled
         # (a coarse through-plane axis pulled finer would blow up RAM for no added detail).
         # cm.spacing is in working order (y,z,x) = sitk (sy,sz,sx), so reorder the sitk spacing.
-        TARGET_MAND = 0.6
+        TARGET_MAND = 0.7                                       # 0.7 mm is plenty for a cutting guide and faster
         isp_w = isp[[1, 2, 0]]                                  # sitk (x,y,z) -> working (y,z,x)
         work = np.maximum(tgt, np.maximum(TARGET_MAND, isp_w))
         # RAM: coarsen further if the on-CPU map would not fit free memory (physical extent over

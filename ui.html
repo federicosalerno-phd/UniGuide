@@ -4411,33 +4411,60 @@ function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,
 // Progressive mandible: a light preview mesh that grows bottom to top WHILE the model runs. It is
 // purely visual; the authoritative mandible is loaded once at the end by ingestModel. Each chunk
 // keeps the SAME anchor so the mandible grows in place instead of sliding.
-// Progressive mandible: shown live as a 3D POINT CLOUD while it segments (no meshing at all, so
-// it is cheap and never stutters). The backend sends the current mandible voxels in world coords;
+// Progressive mandible: a single 3D point cloud that ACCUMULATES as the model works. Each tile
+// sends only its new voxels; they are appended and fade in softly (round points, materialise over
+// ~0.7 s), so the mandible builds up continuously and smoothly, never in blocks. No meshing at all;
 // the solid mesh is built once at the end and replaces the cloud.
-let _growCloud=null,_growHidDemo=false;
+let _growCloud=null,_growHidDemo=false,_gcCount=0,_gcMax=300000,_gcMat=null,_gcAnim=0,_gcFit=0,_gcLastT=0,_gcGap=2;
+function segPointsInit(){
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_gcMax*3),3));
+  geo.setAttribute('spawn',new THREE.BufferAttribute(new Float32Array(_gcMax),1));
+  geo.setDrawRange(0,0);
+  _gcMat=new THREE.ShaderMaterial({
+    uniforms:{uNow:{value:performance.now()/1000},uColor:{value:new THREE.Color(0xff6a54)},uSize:{value:5.5}},
+    vertexShader:'attribute float spawn; uniform float uNow; uniform float uSize; varying float vA;'+
+      'void main(){ vA=clamp((uNow-spawn)/0.7,0.0,1.0); vec4 mv=modelViewMatrix*vec4(position,1.0);'+
+      ' gl_PointSize=uSize*(1.0+(1.0-vA)*1.2)*(240.0/max(1.0,-mv.z)); gl_Position=projectionMatrix*mv; }',
+    fragmentShader:'varying float vA; uniform vec3 uColor;'+
+      'void main(){ vec2 c=gl_PointCoord-0.5; float d=length(c); if(d>0.5) discard;'+
+      ' float a=smoothstep(0.5,0.12,d)*vA; if(a<0.02) discard; gl_FragColor=vec4(uColor,a); }',
+    transparent:true, depthWrite:false, depthTest:true, blending:THREE.NormalBlending});
+  _growCloud=new THREE.Points(geo,_gcMat); _growCloud.name='growCloud'; _growCloud.frustumCulled=false;
+  modelPivot.add(_growCloud); _gcCount=0; _gcFit=0;
+}
+function segPointsAnim(){ if(!_growCloud){ _gcAnim=0; return; }
+  _gcMat.uniforms.uNow.value=performance.now()/1000; invalidate();
+  _gcAnim=requestAnimationFrame(segPointsAnim); }
 function segPoints(b64){
   if(segState.region!=='head') return;
   let bin; try{ bin=atob(b64); }catch(x){ return; }
   const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
-  const pos=new Float32Array(u.buffer);                 // N*3 world coordinates (same frame as the final STL)
-  if(pos.length<9) return;
+  const pos=new Float32Array(u.buffer); const m=(pos.length/3)|0; if(m<1) return;
   if(!renderer){ initGL(); loop(); }
   if(!modelPivot) return;
-  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(pos,3)); g.computeBoundingBox();
   if(!_growCloud){
     _growHidDemo=false;
     if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
     disposeMesh(bridge); bridge=null;
     if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
-    const mat=new THREE.PointsMaterial({color:0xff5a4a,size:1.5,sizeAttenuation:true});
-    _growCloud=new THREE.Points(g,mat); _growCloud.name='growCloud'; modelPivot.add(_growCloud); isDemo=false;
-  } else { _growCloud.geometry.dispose(); _growCloud.geometry=g; }
-  fitObject(_growCloud);                                 // keep the forming mandible framed
-  if($('stTri'))$('stTri').textContent=Math.round(pos.length/3).toLocaleString()+' pts';
+    segPointsInit(); isDemo=false; segPointsAnim();
+  }
+  const g=_growCloud.geometry, pa=g.attributes.position.array, sa=g.attributes.spawn.array, now=performance.now()/1000;
+  if(_gcLastT>0) _gcGap=Math.min(7,Math.max(0.8,now-_gcLastT));   // estimate the interval between backend batches
+  _gcLastT=now;
+  // stagger the new points' spawn times across the estimated gap so they trickle in continuously
+  // over the wait for the next batch, never appearing as a single block
+  let c=_gcCount; for(let i=0;i<m && c<_gcMax;i++,c++){ pa[c*3]=pos[i*3]; pa[c*3+1]=pos[i*3+1]; pa[c*3+2]=pos[i*3+2]; sa[c]=now+(i/m)*_gcGap*0.92; }
+  _gcCount=c; g.setDrawRange(0,_gcCount);
+  g.attributes.position.needsUpdate=true; g.attributes.spawn.needsUpdate=true;
+  // frame once the cloud is substantial, then leave the camera still (no per-update jitter)
+  if(!_gcFit && _gcCount>4000){ _gcFit=1; g.computeBoundingSphere(); fitObject(_growCloud); }
+  if($('stTri'))$('stTri').textContent=_gcCount.toLocaleString()+' pts';
   $('segStatus').textContent='segmenting the mandible';
-  invalidate();
 }
-function segClearGrow(restoreDemo){ if(_growCloud){ disposeMesh(_growCloud); _growCloud=null; }
+function segClearGrow(restoreDemo){ if(_gcAnim){ cancelAnimationFrame(_gcAnim); _gcAnim=0; }
+  if(_growCloud){ disposeMesh(_growCloud); _growCloud=null; } _gcCount=0; _gcFit=0; _gcLastT=0; _gcGap=2;
   if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false; }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
