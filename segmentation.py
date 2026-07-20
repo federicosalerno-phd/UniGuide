@@ -332,7 +332,11 @@ def run_dental_nnunet(ct_nifti, work_dir):
         # SPEED: the mandible does not need the model's finest spacing (~0.31 mm); cap the
         # working spacing so the head segments several times faster with negligible loss on
         # the bone surface (sub-mm is plenty for a cutting guide).
-        work = np.maximum(tgt, 0.6)
+        # Never resample FINER than the data really is: a 1 mm coronal series upsampled to
+        # 0.6 mm would triple the voxel count for no extra detail (and can blow up RAM). Floor
+        # the working spacing at the input's own finest axis.
+        base = max(0.6, float(isp.min()))
+        work = np.maximum(tgt, base)
         # RAM: coarsen further if the on-CPU map would not fit the free memory.
         soft_gb = float(np.prod(np.ceil(sh * isp / work))) * n_cls * 4 / 1e9
         free_gb = psutil.virtual_memory().available / 1e9
@@ -351,28 +355,37 @@ def run_dental_nnunet(ct_nifti, work_dir):
 
     log("PHASE preparing the model")   # fills the silent gap before the sliding window starts
 
+    # Run the prediction IN-PROCESS (predict_single_npy_array) instead of predict_from_files.
+    # predict_from_files spawns multiprocessing workers for preprocessing and export; when the
+    # parent runs low on memory those workers get orphaned and keep holding RAM, which then
+    # starves every later run (this is what made back-to-back segmentations cascade into
+    # failure). The single-array path does everything in this one process, so nothing leaks.
+    from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
+    out_path = os.path.join(out_dir, "CASE.nii.gz")
+    io = SimpleITKIO()
     try:
-        predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
-                                     num_processes_preprocessing=1, num_processes_segmentation_export=1)
+        img, props = io.read_images([os.path.join(in_dir, "CASE_0000.nii.gz")])
+        seg = predictor.predict_single_npy_array(img, props, None, None, False)
+        io.write_seg(seg, out_path, props)
     except Exception as e:
         # Same model as MOOSE, so a memory failure would fail there too: give a clear message
         # instead of falling back and failing again.
         raise RuntimeError("LOW_MEMORY: not enough free RAM to segment this scan at full "
                            "resolution. Close other apps (the browser especially) to free "
                            "memory, then try again. (%s)" % e)
-    outs = glob.glob(os.path.join(out_dir, "*.nii.gz"))
-    if not outs:
+    finally:
+        # free the model + logits before the meshing step so it does not run out of memory
+        try:
+            del predictor
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+    if not os.path.exists(out_path):
         raise RuntimeError("dental nnU-Net produced no output")
-    log("dental output:", outs[0])
-    # free the model + softmax before the meshing step so it does not run out of memory
-    try:
-        del predictor
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
-    return outs[0]
+    log("dental output:", out_path)
+    return out_path
 
 
 # ---------------------------------------------------------------- post-processing
