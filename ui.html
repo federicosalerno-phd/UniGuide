@@ -251,7 +251,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
 
   <!-- tabbar -->
   <div id="tabbar">
-    <div class="tab active" id="tab0" onclick="go(0)"><div class="tn" id="tn0">1</div><span>Model</span></div>
+    <div class="tab" id="tab11" onclick="go(11)"><div class="tn" id="tn11">1</div><span>Segment</span></div>
+    <div class="tab" id="tab0" onclick="go(0)"><div class="tn" id="tn0">2</div><span>Model</span></div>
     <div class="tab locked" id="tab1" onclick="go(1)"><div class="tn" id="tn1">2</div><span>Orient</span></div>
     <div class="tab locked" id="tab2" onclick="go(2)"><div class="tn" id="tn2">3</div><span>Planes</span></div>
     <div class="tab locked" id="tab3" onclick="go(3)"><div class="tn" id="tn3">4</div><span>M. guides</span></div>
@@ -298,20 +299,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
       <!-- page 0: drop zone -->
       <div id="p0wrap">
         <div id="p0inner">
-          <div class="p0note" style="max-width:620px;margin-bottom:14px;font-size:14px">Start from a <b>CT scan</b> and segment it here, or load <b>STL files</b> you already have.</div>
-
-          <div style="max-width:470px;width:100%;margin-bottom:18px;padding:16px 18px;border:1px solid var(--teal);border-radius:10px;background:rgba(90,200,190,.08)">
-            <div style="display:flex;align-items:center;gap:14px;margin-bottom:13px">
-              <svg viewBox="0 0 24 24" width="30" height="30" style="fill:none;stroke:var(--teal);stroke-width:1.6;flex:none"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/></svg>
-              <div>
-                <div style="color:var(--t1);font-weight:700;font-size:16px">Start from a CT scan</div>
-                <div style="color:var(--t2);font-size:12.5px;margin-top:2px">Segment the mandible or the donor fibula from DICOM, automatically or by hand.</div>
-              </div>
-            </div>
-            <button class="btn-outline" style="width:100%;border-color:var(--teal);color:var(--teal)" onclick="openSegmentation()">Open segmentation</button>
-          </div>
-
-          <div class="p0note" id="p0hint" style="max-width:620px;margin-bottom:8px;color:var(--t2)">Or load the STL files. Both the mandible and the donor fibula are required.</div>
+          <div class="p0note" id="p0hint" style="max-width:620px;margin-bottom:6px;color:var(--teal);font-weight:600">Load the mandible and the donor fibula. Both are required.</div>
+          <div class="p0note" style="max-width:620px;margin-bottom:12px;color:var(--t2);font-size:13px">Only have a DICOM scan? Use the <b>Segment</b> tab to make the bones first.</div>
           <div class="dz-row">
             <div class="dz" id="dzd" onclick="openModel()"
               ondragover="event.preventDefault();this.classList.add('dzover')"
@@ -352,66 +341,6 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         @keyframes segindet{0%{margin-left:-35%}100%{margin-left:100%}}
         .segbar-indet{width:35%!important;animation:segindet 1.1s ease-in-out infinite}
       </style>
-      <!-- SEGMENTATION panel: load a DICOM series and segment it here, then feed the meshes
-           straight into the workflow. Heavy work runs in the seg env via the Python backend. -->
-      <div id="segModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.62);align-items:center;justify-content:center">
-        <div style="width:min(680px,92vw);max-height:88vh;overflow:auto;background:#15181c;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:20px 22px;box-shadow:0 18px 60px rgba(0,0,0,.6)">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <b style="color:var(--t1);font-size:16px">Automatic segmentation from DICOM</b>
-            <div style="cursor:pointer;color:var(--t2);font-size:20px;line-height:1" onclick="closeSegmentation()">&times;</div>
-          </div>
-          <div class="p0note" style="margin:0 0 14px 0;color:var(--t2)">Choose a DICOM folder, pick the series and the region, then segment. The bone is produced in the CT frame and loaded straight in.</div>
-
-          <div id="segUnavail" style="display:none;color:#e6a23c;padding:10px 12px;border:1px dashed rgba(230,162,60,.4);border-radius:8px;margin-bottom:12px">
-            Segmentation is not set up yet. Install the engine once, it downloads PyTorch and MOOSE and picks GPU or CPU automatically. Model weights download on first use.
-            <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-              <button id="segSetupBtn" class="btn-outline" onclick="segSetup('')" style="border-color:var(--teal);color:var(--teal)">Set up now</button>
-              <span id="segSetupStatus" style="color:var(--t2);font-size:12px">one-time, a few minutes</span>
-            </div>
-          </div>
-
-          <div style="display:flex;flex-direction:column;gap:14px">
-            <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">1. DICOM folder <span style="opacity:.7">pick the patient folder, all subfolders are searched</span></div>
-              <button class="btn-outline" style="width:100%" onclick="segPickFolder()">Choose folder</button>
-              <div id="segFolder" style="color:var(--t1);font-size:11px;margin-top:5px;word-break:break-all;opacity:.85">not chosen</div>
-            </div>
-
-            <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">2. Region <span style="opacity:.7">head gives the mandible, leg gives the donor fibula</span></div>
-              <div style="display:flex;gap:8px">
-                <button id="segRegHead" class="btn-outline" style="flex:1" onclick="segSetRegion('head')">Head</button>
-                <button id="segRegLeg" class="btn-outline" style="flex:1" onclick="segSetRegion('leg')">Leg</button>
-              </div>
-              <div id="segSideWrap" style="display:none;margin-top:8px">
-                <div style="color:var(--t2);font-size:12px;margin-bottom:5px">Donor side</div>
-                <div style="display:flex;gap:8px">
-                  <button id="segSideR" class="btn-outline" style="flex:1" onclick="segSetSide('R')">Right</button>
-                  <button id="segSideL" class="btn-outline" style="flex:1" onclick="segSetSide('L')">Left</button>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div style="color:var(--t2);font-size:12px;margin-bottom:5px">3. Series</div>
-              <select id="segSeries" style="width:100%;background:#0f1215;color:var(--t1);border:1px solid rgba(255,255,255,.15);border-radius:7px;padding:8px"><option>choose a folder first</option></select>
-            </div>
-
-            <div style="display:flex;gap:8px">
-              <button id="segStartBtn" class="btn-outline" style="flex:1;border-color:var(--teal);color:var(--teal)" onclick="segStart()">Start segmentation</button>
-              <button class="btn-outline" style="flex:1" onclick="segEdit()" title="Correct the automatic result, or draw by hand on the CT slices">Edit on slices</button>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;min-height:16px">
-              <span id="segSpin" class="segspin" style="display:none"></span>
-              <span id="segStatus" style="color:var(--t2);font-size:12px"></span>
-            </div>
-            <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal);transition:width 1s cubic-bezier(.4,0,.2,1)"></div></div>
-
-            <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:120px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap"></div>
-          </div>
-        </div>
-      </div>
-
       <!-- SEGMENTATION EDITOR: hand-correct or draw the mask on CT slices, then re-mesh. -->
       <div id="edModal" style="display:none;position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.72);align-items:center;justify-content:center">
         <div style="width:min(1020px,96vw);height:min(88vh,880px);display:flex;flex-direction:column;background:#15181c;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:16px 18px">
@@ -845,6 +774,42 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         <div class="rp-foot"><div class="rp-nav">
           <button class="btn-back" onclick="go(9)">&#8592; Back</button>
           <button class="btn-confirm" disabled>Done &#10003;</button>
+        </div></div>
+      </div>
+
+      <!-- pane: segmentation (shown first) -->
+      <div class="rp-pane" id="rpSeg">
+        <div class="rp-hd"><div class="rp-title">Segmentation</div><div class="rp-sub">Make the bones from a DICOM scan, or draw by hand</div></div>
+        <div class="rp-scroll">
+          <div id="segUnavail" style="display:none;color:#e6a23c;padding:10px 12px;border:1px dashed rgba(230,162,60,.4);border-radius:8px;margin-bottom:12px;font-size:12px">
+            Segmentation is not set up yet. Install the engine once, it picks GPU or CPU automatically.
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center"><button id="segSetupBtn" class="btn-outline" onclick="segSetup('')" style="border-color:var(--teal);color:var(--teal)">Set up now</button><span id="segSetupStatus" style="color:var(--t2);font-size:11px">one time, a few minutes</span></div>
+          </div>
+          <div class="sec-lbl">1. DICOM folder</div>
+          <button class="btn-outline" style="width:100%" onclick="segPickFolder()">Choose folder</button>
+          <div id="segFolder" style="color:var(--t1);font-size:11px;margin-top:5px;word-break:break-all;opacity:.85">not chosen</div>
+          <div style="color:var(--t2);font-size:11px;opacity:.7;margin-top:3px">pick the patient folder, all subfolders are searched</div>
+          <div class="sec-lbl" style="margin-top:12px">2. Region</div>
+          <div style="display:flex;gap:8px"><button id="segRegHead" class="btn-outline" style="flex:1" onclick="segSetRegion('head')">Head</button><button id="segRegLeg" class="btn-outline" style="flex:1" onclick="segSetRegion('leg')">Leg</button></div>
+          <div style="color:var(--t2);font-size:11px;opacity:.7;margin-top:4px">head gives the mandible, leg gives the donor fibula</div>
+          <div id="segSideWrap" style="display:none;margin-top:8px">
+            <div style="color:var(--t2);font-size:12px;margin-bottom:5px">Donor side</div>
+            <div style="display:flex;gap:8px"><button id="segSideR" class="btn-outline" style="flex:1" onclick="segSetSide('R')">Right</button><button id="segSideL" class="btn-outline" style="flex:1" onclick="segSetSide('L')">Left</button></div>
+          </div>
+          <div class="sec-lbl" style="margin-top:12px">3. Series</div>
+          <select id="segSeries" style="width:100%"><option>choose a folder first</option></select>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button id="segStartBtn" class="btn-confirm" style="flex:1" onclick="segStart()">Start</button>
+            <button class="btn-outline" style="flex:1" onclick="segEdit()" title="Correct the result, or draw by hand on the CT slices">Edit on slices</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:10px"><span id="segSpin" class="segspin" style="display:none"></span><span id="segStatus" style="color:var(--t2);font-size:12px"></span></div>
+          <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal);transition:width 1s cubic-bezier(.4,0,.2,1)"></div></div>
+          <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:110px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap;margin-top:8px"></div>
+          <div class="note" style="margin-top:12px">Already have the STL files? Go to <b>Model</b> to load them directly.</div>
+        </div>
+        <div class="rp-foot"><div class="rp-nav">
+          <button class="btn-back" disabled>&#8592; Back</button>
+          <button class="btn-confirm" onclick="go(0)">Model &#8594;</button>
         </div></div>
       </div>
 
@@ -4376,19 +4341,17 @@ function doTeethAlign(){ if(!teethAlign||!teethPivot) return; const nm=teethAlig
 // head region gives the mandible, the leg region gives the donor fibula.
 let segState={folder:'',region:'head',side:'R',running:false,series:[]};
 function _segActive(el,on){ if(!el)return; el.style.background=on?'rgba(90,200,190,.16)':''; el.style.borderColor=on?'var(--teal)':''; el.style.color=on?'var(--teal)':''; }
-function openSegmentation(){
-  if(!(B&&B.seg_status)){ toast('Segmentation needs the desktop app.'); return; }
+function openSegmentation(){ go(SEG); }
+function segEnter(){                       // called by go() when entering the Segmentation section
+  if(!(B&&B.seg_status)) return;
   B.seg_status(function(s){ let st={}; try{st=JSON.parse(s);}catch(e){} $('segUnavail').style.display=st.available?'none':'block'; });
-  segState={folder:'',region:'head',side:'R',running:false,series:[]};
-  $('segFolder').textContent='not chosen';
-  $('segSeries').innerHTML='<option>choose a folder first</option>';
-  $('segStatus').textContent='';
-  $('segProg').style.display='none'; $('segProg').textContent='';
-  $('segStartBtn').disabled=false;
-  segSetRegion('head');
-  $('segModal').style.display='flex';
+  if(!segState.__init){ segState.__init=true;
+    $('segFolder').textContent='not chosen';
+    $('segSeries').innerHTML='<option>choose a folder first</option>';
+    $('segStatus').textContent=''; $('segProg').style.display='none'; $('segProg').textContent='';
+    segSetRegion('head'); }
 }
-function closeSegmentation(){ $('segModal').style.display='none'; }
+function closeSegmentation(){ /* the section stays open; nothing to close */ }
 function segSetup(force){
   if(!(B&&B.seg_setup)){ toast('Setup needs the desktop app.'); return; }
   $('segSetupBtn').disabled=true; $('segSetupStatus').textContent='installing…';
@@ -6371,10 +6334,12 @@ function ingestModel(positions,name){
 // ─────────────────────────────────────────────────────────────────────────────
 // navigation
 // ─────────────────────────────────────────────────────────────────────────────
-const NSTEP=11;  // 0 Model·1 Orient·2 Planes·3 M.guides·4 Connector·5 Segments·6 F.guides(on mandible)·7 Donor fibula·8 Reconstruction·9 Check·10 Export
-const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpRecon','rp4','rp5'];
-const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export'];
+const NSTEP=12;  // 11 Segmentation (shown first) · 0 Model·1 Orient·2 Planes·3 M.guides·4 Connector·5 Segments·6 F.guides·7 Donor·8 Reconstruction·9 Check·10 Export
+const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpRecon','rp4','rp5','rpSeg'];
+const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export','Segmentation'];
 const MGUIDE=3, CONN=4, SEGMENTS=5, FIBGUIDE=6, DONOR=7, RECON=8;   // step indices — REORDERED: guides → connector → segments → fibula guides (was segments → guides → connector)
+const SEG=11;                                 // segmentation section, added last internally so no existing index shifts
+const VORDER=[11,0,1,2,3,4,5,6,7,8,9,10];     // visual/tab order: Segment first, then Model..Export
 // SINGLE SOURCE OF TRUTH for connector visibility: once generated it must be visible in EVERY step from the
 // mandible guides on, EXCEPT the segments step (where it would sit on top of the segment editing). It used to be
 // an ad-hoc `(curP===MGUIDE||curP===CONN||curP===FIBGUIDE)` allow-list duplicated in three writers that fought
@@ -6386,10 +6351,11 @@ function unlockTabs(){ for(let i=1;i<NSTEP;i++){const t=$('tab'+i); t.classList.
 function go(idx){
   if(idx<0||idx>=NSTEP)return;
   // BOTH the mandible AND the donor fibula are mandatory before leaving the import step.
-  if(idx>0 && !(boneMesh && fibulaMesh)){
+  // The Segmentation section is exempt: it is where you produce those bones.
+  if(idx>0 && idx!==SEG && !(boneMesh && fibulaMesh)){
     toast(!boneMesh&&!fibulaMesh? 'Load the mandible AND the donor fibula to continue'
         : !boneMesh? 'Load the mandible too to continue' : 'Load the donor fibula too to continue');
-    idx=0;
+    idx = boneMesh||fibulaMesh ? 0 : SEG;   // nothing yet → send to Segmentation, else to Model
   }
   if(activeNormalSide)exitNormalView();   // never carry the CAD ortho view across steps
   const _stepChanged=(idx!==curP);
@@ -6402,12 +6368,14 @@ function go(idx){
     if(typeof clearFibHoleHL==='function')clearFibHoleHL(); if(typeof clearFibPaintPreview==='function')clearFibPaintPreview(); if(typeof clearLoftHL==='function')clearLoftHL();
     if(typeof setFibPickUI==='function')setFibPickUI(); if(typeof setFibHoleUI==='function')setFibHoleUI(); if(typeof setFibPaintUI==='function')setFibPaintUI(); }
   if(typeof setLoftPickUI==='function')setLoftPickUI();   // reflect connector face pick/assigned state on entry
-  for(let i=0;i<NSTEP;i++){ const t=$('tab'+i),n=$('tn'+i); t.className='tab';
-    if(i<idx){t.classList.add('done'); n.innerHTML='&#10003;';}
-    else if(i===idx){t.classList.add('active'); n.textContent=i+1;}
-    else{ n.textContent=i+1; }
+  for(let i=0;i<NSTEP;i++){ const t=$('tab'+i),n=$('tn'+i); if(!t||!n)continue; t.className='tab';
+    const vi=VORDER.indexOf(i), vc=VORDER.indexOf(idx);
+    if(i===idx){t.classList.add('active'); n.textContent=vi+1;}
+    else if(vi<vc){t.classList.add('done'); n.innerHTML='&#10003;';}
+    else{ n.textContent=vi+1; }
   }
   PANES.forEach(p=>$(p).style.display='none'); $(PANES[idx]).style.display='flex';
+  if(idx===SEG && typeof segEnter==='function') segEnter();
   const showViewer=idx>0;
   $('p0wrap').style.display=idx===0?'flex':'none';
   $('viewerwrap').style.display=showViewer?'block':'none';
@@ -6912,6 +6880,7 @@ function initBridge(){
     B=ch.objects.backend;
     if(B&&B.app_info){ B.app_info(function(s){ try{const i=JSON.parse(s); setSt(i.name+' '+i.version+' \u00b7 no model','');}catch(e){} }); }
     if(B&&B.segEvent&&B.segEvent.connect){ B.segEvent.connect(onSegEvent); }
+    if(curP===SEG && typeof segEnter==='function') segEnter();   // refresh the setup state once the backend is ready
   });
 }
 
@@ -6919,12 +6888,12 @@ function initBridge(){
 // boot
 // ─────────────────────────────────────────────────────────────────────────────
 initBridge();
-$('rp0').style.display='flex';
 setSt('No model','');
 updateLegend();
 renderSegSchema();
 unlockTabs();                          // steps are freely navigable from the start
 if($('btn0'))$('btn0').disabled=false;
+go(SEG);                               // start on the Segmentation section (shown first)
 </script>
 </body>
 </html>
