@@ -62,10 +62,10 @@ REGIONS = {
         # or eroded (a defect gap), and both remaining segments must be kept.
         "keep_large": {2},
         "constrain_to_host": {5: 2},     # canal (5) must live inside the mandible (2)
-        # Only mesh what the reconstruction needs: the mandible and the nerve canal. The full
-        # 5-label mask is still saved in the bundle, so skull/teeth stay editable, but we skip
-        # the very large skull mesh so the result is fast. The tumour is drawn by hand later.
-        "stl_labels": {2, 5},
+        # Mesh the skull (context, so it is clearly a head), the mandible and the nerve canal. The
+        # skull is built last and shown translucent; the mandible is the working structure. Teeth
+        # stay in the bundle for editing. The tumour is drawn by hand later.
+        "stl_labels": {1, 2, 5},
     },
     "leg": {
         "moose_model": "clin_ct_peripheral_bones",
