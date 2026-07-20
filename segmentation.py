@@ -56,7 +56,11 @@ REGIONS = {
         # for the surgeon to DRAW the tumour mass on the slices, then re-mesh it to an STL.
         "labels": {1: "Skull", 2: "Mandible", 3: "UpperTeeth", 4: "LowerTeeth",
                    5: "MandibularCanal", 6: "Tumour"},
-        "largest_only": {1, 2},          # skull and mandible are one connected bone each
+        "largest_only": {1},             # the skull is a single connected bone
+        # The mandible: keep EVERY large piece, not just the biggest. A reconstruction patient's
+        # mandible is often in two (or more) segments because the anterior body has been resected
+        # or eroded (a defect gap), and both remaining segments must be kept.
+        "keep_large": {2},
         "constrain_to_host": {5: 2},     # canal (5) must live inside the mandible (2)
         # Only mesh what the reconstruction needs: the mandible and the nerve canal. The full
         # 5-label mask is still saved in the bundle, so skull/teeth stay editable, but we skip
@@ -448,7 +452,7 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             return
         state["last_vox"] = vox
         arr = np.ascontiguousarray(mand.transpose(transpose_back))            # -> (Z', Y', X') sitk order
-        arr = clean_components(arr, largest_only=True)                        # only the mandible, no stray blobs
+        arr = clean_components(arr, largest_only=False, rel=0.40)             # both mandible segments, no stray blobs
         kz, ky, kx = np.where(arr)
         n = len(kz)
         if n < 100:
@@ -663,11 +667,17 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
     mesh_labels = set(labels) if stl_set is None else set(stl_set)
     need = set(mesh_labels) | {constrain[l] for l in mesh_labels if l in constrain}
 
+    keep_large = region_cfg.get("keep_large", set())
     masks = {}
     for lab in labels:
         if lab not in present or lab not in need:
             continue
-        masks[lab] = clean_components(arr == lab, largest_only=(lab in largest_only))
+        if lab in keep_large:
+            # keep every component at least 40% of the biggest: both mandible segments of a defect
+            # case survive, while small mislabeled neck/thorax pieces are dropped
+            masks[lab] = clean_components(arr == lab, largest_only=False, rel=0.40)
+        else:
+            masks[lab] = clean_components(arr == lab, largest_only=(lab in largest_only))
 
     out = {}
     todo = [(lab, name) for lab, name in labels.items() if lab in masks and lab in mesh_labels]
