@@ -4489,8 +4489,12 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
+      const sr=e.text.match(/STL_READY (\S+) (.+)/);
+      if(sr){ segShowStl(sr[1], sr[2].trim()); return; }
+      const ph=e.text.match(/PHASE (.+)/);
+      if(ph){ $('segStatus').textContent=ph[1].trim(); segBar(null); return; }
       let m=e.text.match(/(\d+)\/(\d+)\s*\[/);
-      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='segmenting '+p+'%'; segBar(p); return; }
+      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent=(p>=100?'finishing, building the models':'segmenting '+p+'%'); segBar(p>=100?null:p); return; }
       m=e.text.match(/copying:\s*(\d+)\/(\d+)/i);
       if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='copying the scan '+p+'%'; segBar(p); return; }
       if(/Predicting|preprocess/i.test(e.text)){ $('segStatus').textContent='preparing the model'; segBar(null); return; }
@@ -4506,6 +4510,14 @@ function onSegEvent(s){
       $('segStatus').textContent='done, loading mesh'; segLoadResult(r);
     }
   }
+}
+function segShowStl(name, path){
+  $('segStatus').textContent=name+' ready';
+  const primary = (segState.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
+  if(name!==primary) return;                 // load the main bone live so it appears in 3D
+  B.seg_read_stl(path, function(s){ let d={}; try{d=JSON.parse(s);}catch(x){}
+    if(!d||d.error)return;
+    if(segState.region==='head') ingestModel(d.positions,name); else ingestFibula(d.positions,name); });
 }
 function segLoadResult(r){
   const stls=r.stls||{};

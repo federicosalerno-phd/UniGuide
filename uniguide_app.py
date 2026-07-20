@@ -340,8 +340,14 @@ class Backend(QObject):
                     self.segEvent.emit(json.dumps({"kind": "progress", "cmd": cmd_tag, "text": ln}))
 
         def on_fin(code, _status):
-            out = buf["out"].decode("utf-8", "replace").strip()
-            line = out.splitlines()[-1] if out else ""
+            out = buf["out"].decode("utf-8", "replace")
+            line = ""
+            for ln in out.splitlines():
+                if ln.startswith("UNIGUIDE_RESULT "):
+                    line = ln[len("UNIGUIDE_RESULT "):]
+            if not line:
+                nonblank = [l for l in out.splitlines() if l.strip()]
+                line = nonblank[-1] if nonblank else ""
             self.segEvent.emit(json.dumps({"kind": "done", "cmd": cmd_tag,
                                            "code": int(code), "result": line}))
             if proc in self._seg_procs:

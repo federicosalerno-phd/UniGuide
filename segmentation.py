@@ -413,9 +413,10 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
         masks[lab] = clean_components(arr == lab, largest_only=(lab in largest_only))
 
     out = {}
-    for lab, name in labels.items():
-        if lab not in masks:
-            log("label", lab, name, "absent"); continue
+    todo = [(lab, name) for lab, name in labels.items() if lab in masks]
+    log("PHASE building %d 3D models" % len(todo))
+    for lab, name in todo:
+        log("PHASE building %s" % name)
         mask = masks[lab]
         host = constrain.get(lab)
         if host is not None and host in masks:
@@ -427,6 +428,7 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
         path = os.path.join(out_dir, name + ".stl")
         mesh.export(path)
         log("wrote", name, len(mesh.vertices), "verts ->", path)
+        log("STL_READY %s %s" % (name, path))   # UI loads it live
         out[name] = path
     return out
 
@@ -495,6 +497,7 @@ def segment(dicom_folder, series_id, region, work_dir):
     cfg = REGIONS[region]
     os.makedirs(work_dir, exist_ok=True)
     local = _prepare_local_series(dicom_folder, series_id, work_dir)
+    log("PHASE reading the scan")
     nifti = series_to_nifti(local, series_id, os.path.join(work_dir, "input", "CT_%s.nii.gz" % region))
     if region == "head":
         # direct DentalSegmentator (fast, shows a percentage); MOOSE is the fallback
@@ -502,7 +505,9 @@ def segment(dicom_folder, series_id, region, work_dir):
     else:
         label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
     stls = labels_to_stls(label_nii, cfg, os.path.join(work_dir, "stl"))
+    log("PHASE preparing the editor")
     bundle = save_edit_bundle(nifti, label_nii, cfg, os.path.join(work_dir, "edit"))
+    log("PHASE done")
     return {"ok": True, "region": region, "label_nii": label_nii, "stls": stls, "bundle": bundle}
 
 
@@ -553,7 +558,8 @@ def main(argv):
         import traceback
         traceback.print_exc(file=sys.stderr)
         result = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
-    print(json.dumps(result))
+    # Tag the result line so the app can find it even if the ML stack prints to stdout.
+    print("UNIGUIDE_RESULT " + json.dumps(result), flush=True)
     return 0 if result.get("ok") else 1
 
 
