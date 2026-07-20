@@ -336,7 +336,9 @@ def run_dental_nnunet(ct_nifti, work_dir):
         # RAM: coarsen further if the on-CPU map would not fit the free memory.
         soft_gb = float(np.prod(np.ceil(sh * isp / work))) * n_cls * 4 / 1e9
         free_gb = psutil.virtual_memory().available / 1e9
-        budget = max(2.0, free_gb * 0.45)
+        # keep the on-CPU map to ~a third of free RAM: the model, the resampled copies and the
+        # mesh step all need memory too, so leave plenty of headroom.
+        budget = max(1.5, free_gb * 0.35)
         if soft_gb > budget:
             work = work * (soft_gb / budget) ** (1.0 / 3.0)
             soft_gb = budget
@@ -362,6 +364,14 @@ def run_dental_nnunet(ct_nifti, work_dir):
     if not outs:
         raise RuntimeError("dental nnU-Net produced no output")
     log("dental output:", outs[0])
+    # free the model + softmax before the meshing step so it does not run out of memory
+    try:
+        del predictor
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
     return outs[0]
 
 
