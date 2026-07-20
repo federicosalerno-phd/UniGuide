@@ -57,9 +57,11 @@ REGIONS = {
         "labels": {1: "Skull", 2: "Mandible", 3: "UpperTeeth", 4: "LowerTeeth",
                    5: "MandibularCanal", 6: "Tumour"},
         "largest_only": {1},             # the skull is a single connected bone
-        # The mandible: keep EVERY large piece, not just the biggest. A reconstruction patient's
-        # mandible is often in two (or more) segments because the anterior body has been resected
-        # or eroded (a defect gap), and both remaining segments must be kept.
+        # The mandible: keep EVERY large piece, not just the biggest. The dental model can SPLIT a
+        # mandible (e.g. it mislabels the anterior body as skull on a tight facial-massif scan,
+        # leaving the two rami as separate components), and a real resected mandible is genuinely
+        # discontinuous. Keep all large pieces so nothing is silently dropped; the anterior body,
+        # if the model handed it to the skull, is reconnected by hand in the editor.
         "keep_large": {2},
         "constrain_to_host": {5: 2},     # canal (5) must live inside the mandible (2)
         # Mesh the skull (context, so it is clearly a head), the mandible and the nerve canal. The

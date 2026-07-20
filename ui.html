@@ -4416,11 +4416,32 @@ function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,
 // is the CT at that level with the mandible painted red, placed at its true world position; the red
 // pixels stack into the 3D mandible and you see the actual anatomy layer by layer. No meshing; the
 // solid mesh loads once at the end.
-let _sliceGroup=null,_growHidDemo=false,_sliceN=0,_sliceAnim=0,_sliceRevealT=0;
+let _sliceGroup=null,_growHidDemo=false,_sliceN=0,_sliceAnim=0,_sliceQ=[],_sliceDrain=0;
 function segSliceAnim(){ if(!_sliceGroup){ _sliceAnim=0; return; }
   const now=performance.now()/1000;
   _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.5)); });
   invalidate(); _sliceAnim=requestAnimationFrame(segSliceAnim); }
+function _sliceReveal(it){                    // add ONE slice plane at its world corners, fade it in
+  if(!_sliceGroup) return;
+  const c=it.c, tex=new THREE.Texture(it.img);
+  tex.flipY=false; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.needsUpdate=true;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute([c[0][0],c[0][1],c[0][2], c[1][0],c[1][1],c[1][2], c[2][0],c[2][1],c[2][2], c[3][0],c[3][1],c[3][2]],3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute([0,0, 1,0, 1,1, 0,1],2));
+  g.setIndex([0,1,2, 0,2,3]);
+  const mesh=new THREE.Mesh(g,new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false,opacity:0}));
+  mesh.renderOrder=1; mesh.userData.spawn=performance.now()/1000;
+  _sliceGroup.add(mesh); _sliceN++;
+  if(_sliceN===2) fitObject(_sliceGroup);
+  if($('stTri'))$('stTri').textContent=_sliceN+' slices';
+  $('segStatus').textContent='scanning the mandible';
+}
+function _sliceDrainTick(){                    // reveal ONE queued slice at a time, spread over the wait
+  if(!_sliceGroup){ _sliceDrain=0; return; }
+  if(_sliceQ.length) _sliceReveal(_sliceQ.shift());
+  const iv=Math.max(400,Math.min(2600,14000/Math.max(1,_sliceQ.length)));   // long queue -> faster, short -> slower
+  _sliceDrain=setTimeout(_sliceDrainTick, iv);
+}
 function segSlice(cornersStr,b64){
   if(segState.region!=='head') return;
   if(!renderer){ initGL(); loop(); }
@@ -4433,31 +4454,17 @@ function segSlice(cornersStr,b64){
     disposeMesh(bridge); bridge=null;
     if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
     if(window._skullMesh){ disposeMesh(window._skullMesh); window._skullMesh=null; }
-    _sliceGroup=new THREE.Group(); _sliceGroup.name='sliceScan'; modelPivot.add(_sliceGroup); _sliceN=0; _sliceRevealT=0;
+    _sliceGroup=new THREE.Group(); _sliceGroup.name='sliceScan'; modelPivot.add(_sliceGroup); _sliceN=0; _sliceQ=[];
     isDemo=false; segSliceAnim();
   }
   const img=new Image();
-  img.onload=function(){
-    if(!_sliceGroup) return;
-    const tex=new THREE.Texture(img); tex.flipY=false; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.needsUpdate=true;
-    const g=new THREE.BufferGeometry();
-    g.setAttribute('position',new THREE.Float32BufferAttribute([c[0][0],c[0][1],c[0][2], c[1][0],c[1][1],c[1][2], c[2][0],c[2][1],c[2][2], c[3][0],c[3][1],c[3][2]],3));
-    g.setAttribute('uv',new THREE.Float32BufferAttribute([0,0, 1,0, 1,1, 0,1],2));
-    g.setIndex([0,1,2, 0,2,3]);
-    const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false,opacity:0});
-    const now=performance.now()/1000;
-    _sliceRevealT=Math.max(now,_sliceRevealT||now)+0.09;    // trickle slices ~90 ms apart -> a smooth sweep
-    const mesh=new THREE.Mesh(g,mat); mesh.renderOrder=1; mesh.userData.spawn=_sliceRevealT;
-    _sliceGroup.add(mesh); _sliceN++;
-    if(_sliceN===3) fitObject(_sliceGroup);
-    if($('stTri'))$('stTri').textContent=_sliceN+' slices';
-    $('segStatus').textContent='scanning the mandible';
-  };
+  img.onload=function(){ _sliceQ.push({c:c, img:img}); if(!_sliceDrain) _sliceDrainTick(); };
   img.src='data:image/png;base64,'+b64;
 }
 function segClearGrow(restoreDemo){ if(_sliceAnim){ cancelAnimationFrame(_sliceAnim); _sliceAnim=0; }
+  if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[];
   if(_sliceGroup){ _sliceGroup.traverse(function(o){ if(o.material&&o.material.map)o.material.map.dispose(); }); disposeMesh(_sliceGroup); _sliceGroup=null; }
-  _sliceN=0; _sliceRevealT=0;
+  _sliceN=0;
   if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false; }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
