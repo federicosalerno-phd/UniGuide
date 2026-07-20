@@ -423,6 +423,17 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
 
     out = {}
     todo = [(lab, name) for lab, name in labels.items() if lab in masks]
+
+    def _prio(name):                       # build the bone you need FIRST, the big skull last
+        n = name.lower()
+        if "mandible" in n or "fibula" in n:
+            return 0
+        if "canal" in n or "tibia" in n:
+            return 1
+        if "skull" in n:
+            return 9
+        return 5
+    todo.sort(key=lambda t: _prio(t[1]))
     log("PHASE building %d 3D models" % len(todo))
     for lab, name in todo:
         log("PHASE building %s" % name)
