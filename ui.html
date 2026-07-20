@@ -352,6 +352,10 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
             <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#000;border-radius:8px;overflow:hidden">
               <canvas id="edCanvas" width="512" height="512" style="max-width:100%;max-height:100%;cursor:crosshair;touch-action:none;image-rendering:pixelated"></canvas>
             </div>
+            <div style="width:300px;min-width:220px;display:flex;flex-direction:column;background:#0a0c0e;border-radius:8px;overflow:hidden;position:relative">
+              <div style="position:absolute;top:6px;left:9px;color:var(--t2);font-size:11px;pointer-events:none;z-index:1">3D model, drag to rotate</div>
+              <canvas id="ed3dCanvas" style="width:100%;height:100%;display:block;cursor:grab;touch-action:none"></canvas>
+            </div>
             <div style="width:232px;display:flex;flex-direction:column;gap:12px;color:var(--t2);font-size:12px">
               <div>
                 <div>Slice <span id="edZval">0</span> / <span id="edZmax">0</span></div>
@@ -4429,8 +4433,8 @@ function segGrowStl(path,k,n){
       _growPreview.geometry.dispose(); _growPreview.geometry=g; }
     fitObject(_growPreview);                                        // keep the growing mandible framed
     if($('stTri'))$('stTri').textContent=Math.round(d.positions.length/9).toLocaleString();
-    $('segStatus').textContent=(k<n?'building the mandible ':'mandible ready ')+k+'/'+n;
-    segProg(15+70*k/Math.max(1,n)); invalidate();
+    $('segStatus').textContent='building the mandible';            // the bar is driven by the tile counter
+    invalidate();
   });
 }
 function segClearGrow(restoreDemo){ if(_growPreview){ disposeMesh(_growPreview); _growPreview=null; } _growOff=null;
@@ -4617,10 +4621,10 @@ function openEditor(bundle){
     Object.keys(edState.names).forEach(function(k){ const o=document.createElement('option'); o.value=k; o.textContent=edState.names[k]; sel.appendChild(o); });
     $('edStatus').textContent='';
     edBindCanvas(); $('edModal').style.display='flex';
-    edSetTool('brush'); edSetAxis(0);
+    edSetTool('brush'); edSetAxis(0); edStart3D();
   });
 }
-function closeEditor(){ $('edModal').style.display='none'; }
+function closeEditor(){ $('edModal').style.display='none'; edStop3D(); }
 function edWindow(l,w){ edState.level=l; edState.width=w; edLoadCT(); }
 function edGoSlice(z){ const n=edAxisDims().n; z=Math.max(0,Math.min(n-1,z)); edState.z=z; $('edZ').value=z; $('edZval').textContent=z; edLoadCT(); edLoadMask(); }
 function edLoadCT(){
@@ -4667,6 +4671,43 @@ function edRemesh(){
   $('edRemeshBtn').disabled=true; $('edStatus').textContent='re-meshing…';
   B.edit_remesh(lab, '');
 }
+// ── editor 3D preview: shows the segmented model live while you paint on the slices ──
+// It renders the SAME scene as the main view from its own camera, so it always reflects the
+// current segmentation (and updates the moment a re-mesh lands), with drag to rotate.
+let ed3d=null;
+function edInit3D(){
+  const cvs=$('ed3dCanvas'); if(!cvs) return null;
+  if(ed3d && ed3d.renderer) return ed3d;
+  let rnd; try{ rnd=new THREE.WebGLRenderer({canvas:cvs, antialias:true, alpha:true}); }catch(e){ return null; }
+  rnd.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+  ed3d={renderer:rnd, cam:new THREE.PerspectiveCamera(35,1,1,8000), orbit:{az:0.7,el:1.15,r:220,tgt:new THREE.Vector3()}, on:false, raf:0};
+  let drag=false, px=0, py=0;
+  cvs.addEventListener('pointerdown', e=>{ drag=true; px=e.clientX; py=e.clientY; cvs.style.cursor='grabbing'; try{cvs.setPointerCapture(e.pointerId);}catch(x){} });
+  cvs.addEventListener('pointermove', e=>{ if(!drag)return; ed3d.orbit.az-=(e.clientX-px)*0.01; ed3d.orbit.el=Math.max(0.15,Math.min(Math.PI-0.15,ed3d.orbit.el-(e.clientY-py)*0.01)); px=e.clientX; py=e.clientY; });
+  cvs.addEventListener('pointerup', ()=>{ drag=false; cvs.style.cursor='grab'; });
+  cvs.addEventListener('wheel', e=>{ e.preventDefault(); ed3d.orbit.r=Math.max(25,Math.min(2000,ed3d.orbit.r*(e.deltaY>0?1.1:0.9))); }, {passive:false});
+  return ed3d;
+}
+function edFrame3D(){
+  if(!ed3d) return;
+  const target=(boneMesh&&!isDemo)?boneMesh:(modelPivot||scene);
+  const box=new THREE.Box3().setFromObject(target); if(box.isEmpty()) return;
+  box.getCenter(ed3d.orbit.tgt); const sz=new THREE.Vector3(); box.getSize(sz);
+  ed3d.orbit.r=Math.max(60, sz.length()*1.15);
+}
+function edRender3D(){
+  if(!ed3d||!ed3d.renderer) return;
+  const cvs=$('ed3dCanvas'), w=cvs.clientWidth||300, h=cvs.clientHeight||300;
+  if(cvs.width!==w||cvs.height!==h){ ed3d.renderer.setSize(w,h,false); ed3d.cam.aspect=w/h; ed3d.cam.updateProjectionMatrix(); }
+  const o=ed3d.orbit, se=Math.sin(o.el), ce=Math.cos(o.el);
+  ed3d.cam.position.set(o.tgt.x+o.r*se*Math.cos(o.az), o.tgt.y+o.r*ce, o.tgt.z+o.r*se*Math.sin(o.az));
+  ed3d.cam.lookAt(o.tgt);
+  ed3d.renderer.render(scene, ed3d.cam);      // same scene as the main view: always in sync
+}
+function edStart3D(){ const e=edInit3D(); if(!e) return; setTimeout(function(){ edFrame3D();
+  e.on=true; (function loop(){ if(!e.on)return; edRender3D(); e.raf=requestAnimationFrame(loop); })(); }, 60); }
+function edStop3D(){ if(ed3d){ ed3d.on=false; cancelAnimationFrame(ed3d.raf); } }
+function edReframe3D(){ if(ed3d&&ed3d.on) edFrame3D(); }
 function memorizeSegments(){      // store each segment's intrinsic shape (length + 2 cut normals, segment-local)
   segShapes=[]; if(!allPlanesSet())return;
   if(fibNodes.length!==planes.length) fibNodes=planes.map(pl=>pl.frame.P.clone());

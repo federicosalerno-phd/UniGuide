@@ -367,7 +367,7 @@ def _reveal_predictor_class():
                                                 value_scaling_factor=10, device=results_device)
                 else:
                     gaussian = 1
-                last_start = [None]
+                every = max(1, len(slicers) // 18)      # aim for ~18 progressive reveals across the run
                 with tqdm(desc=None, total=len(slicers), disable=not self.allow_tqdm) as pbar:
                     while True:
                         item = queue.get()
@@ -382,17 +382,12 @@ def _reveal_predictor_class():
                         n_predictions[sl[1:]] += gaussian
                         queue.task_done()
                         pbar.update()
-                        # A tile with a new Z-start means every tile below it is finished, so the
-                        # band up to that start is final: reveal it. One reveal per Z step, a few
-                        # per run. (The very top band is completed by the final STL_READY.)
-                        if self.reveal_cb is not None:
+                        # Reveal the CURRENT best mandible often (every ~1/18 of the tiles) so it
+                        # forms continuously in the UI. Tiles run bottom to top, so the mandible
+                        # fills in early; later skull tiles add nothing and the callback skips them.
+                        if self.reveal_cb is not None and (pbar.n % every == 0):
                             try:
-                                cur = int(sl[2].start)
-                                if last_start[0] is None:
-                                    last_start[0] = cur
-                                elif (cur > last_start[0]) if self.z_ascending else (cur < last_start[0]):
-                                    self.reveal_cb(predicted_logits, n_predictions, cur, self.z_ascending)
-                                    last_start[0] = cur
+                                self.reveal_cb(predicted_logits, n_predictions)
                             except Exception as ex:
                                 log("reveal hook disabled:", ex)
                                 self.reveal_cb = None
@@ -430,46 +425,42 @@ def _save_grow_png(mand_w, debug_dir, step):
         log("grow png skipped:", e)
 
 
-def _make_reveal(crop_img, grow_dir, cm, transpose_back, patch_z, nominal, debug_dir=None):
-    """Build the reveal callback: mesh the mandible in the finalized Z-band so far, in the CT
-    physical frame, and emit an STL_GROW line the UI turns into the growing 3D mandible."""
+def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
+    """Build the reveal callback: mesh the CURRENT best mandible from everything accumulated so
+    far (touched voxels only), in the CT physical frame, and emit an STL_GROW line the UI turns
+    into the growing 3D mandible. Called often, so it skips when nothing new was added."""
     os.makedirs(grow_dir, exist_ok=True)
     sp_w = (float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1]))  # working (y,z,x) -> sitk (x,y,z)
     origin = crop_img.GetOrigin()
     direction = crop_img.GetDirection()
-    pz = int(patch_z)
-    state = {"step": 0, "mand": None}
+    state = {"step": 0, "last_vox": 0}
 
-    def cb(logits, npred, frontier, ascending):
-        # logits: (C, Y', Z', X') working grid; npred: (Y', Z', X'); frontier: working Z index.
-        if state["mand"] is None:
-            state["mand"] = np.zeros(tuple(int(x) for x in logits.shape[1:]), dtype=bool)  # (Y',Z',X')
-        Zw = state["mand"].shape[1]
-        # Only the band that is fully accumulated is safe to reveal. Tiles cover [start, start+patch)
-        # upward, so ascending (frontier = a new higher start, all lower tiles done) makes [0, frontier)
-        # final; descending (frontier = a new lower start) only makes [frontier + patch, Zw) final,
-        # because tiles down to frontier still write up into [frontier, frontier+patch).
-        lo, hi = (0, int(frontier)) if ascending else (int(frontier) + pz, Zw)
-        if hi <= lo:
+    def cb(logits, npred):
+        # logits: (C, Y', Z', X') working grid, still un-normalized; npred: (Y', Z', X') weights.
+        touched = npred > 0.5
+        seg = (logits / npred.clamp(min=1e-4)).argmax(0)          # (Y', Z', X')
+        mand = (seg == 2) & touched
+        vox = int(mand.sum().item())
+        # only re-mesh when the mandible actually grew, so frequent calls stay cheap
+        if vox < 200 or vox < state["last_vox"] * 1.03:
             return
-        nd = npred[:, lo:hi, :].clamp(min=1e-4)
-        seg = (logits[:, :, lo:hi, :] / nd).argmax(0).to("cpu").numpy().astype(np.uint8)   # (Y',hb,X')
-        state["mand"][:, lo:hi, :] = (seg == 2)
+        state["last_vox"] = vox
+        m = mand.to("cpu").numpy()                                # (Y', Z', X') bool
         state["step"] += 1
-        arr = np.ascontiguousarray(state["mand"].transpose(transpose_back))   # -> (Z',Y',X') for sitk
-        arr = clean_components(arr, largest_only=False).astype(np.uint8)       # keep lagging ramus/condyle
+        arr = np.ascontiguousarray(m.transpose(transpose_back)).astype(np.uint8)  # -> (Z', Y', X') for sitk
+        arr = clean_components(arr, largest_only=True).astype(np.uint8)           # show only the mandible, not stray blobs
         img_w = sitk.GetImageFromArray(arr)
         img_w.SetSpacing(sp_w)
         img_w.SetOrigin(origin)
         img_w.SetDirection(direction)
-        mesh = mask_to_mesh(arr > 0, img_w, smooth_iter=6)
+        mesh = mask_to_mesh(arr > 0, img_w, smooth_iter=4)
         if mesh is None:
             return
         path = os.path.join(grow_dir, "Mandible_grow_%d.stl" % state["step"])
         mesh.export(path)
-        log("STL_GROW Mandible %s %d %d" % (path, min(state["step"], nominal), nominal))
+        log("STL_GROW Mandible %s %d %d" % (path, state["step"], state["step"]))
         if debug_dir:
-            _save_grow_png(state["mand"], debug_dir, state["step"])
+            _save_grow_png(m, debug_dir, state["step"])
 
     return cb
 
@@ -491,7 +482,6 @@ def run_dental_nnunet(ct_nifti, work_dir):
     os.makedirs(in_dir, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
     cropped = _crop_to_bone(ct_nifti, os.path.join(work_dir, "ct_bone.nii.gz"))
-    shutil.copyfile(cropped, os.path.join(in_dir, "CASE_0000.nii.gz"))
     crop_img = sitk.ReadImage(cropped)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log("dental nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
@@ -509,6 +499,32 @@ def run_dental_nnunet(ct_nifti, work_dir):
         predictor = nnUNetPredictor(**_args)
         predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
 
+    # If the scan runs well below the jaw (a COLLO-TORACE protocol), keep only the slab around the
+    # dental arch for the fine pass and the growing preview. The teeth are the densest voxels in the
+    # body (enamel ~2000-3000 HU) and are never confused with spine or ribs, so they locate the
+    # mandible robustly with NO extra inference and WITHOUT needing to know which way is up. The fine
+    # pass then never sees neck/thorax bone the dental model would mislabel as mandible.
+    fine_nifti, fine_img, paste = cropped, crop_img, None
+    sz, sp = crop_img.GetSize(), crop_img.GetSpacing()
+    if sz[2] * sp[2] > 210.0:
+        try:
+            arr = sitk.GetArrayFromImage(crop_img)                       # (z,y,x), Hounsfield units
+            dense = (arr > 1500).reshape(arr.shape[0], -1).sum(axis=1)   # per-slice count of teeth-dense voxels
+            if int(dense.max()) > 40:
+                zc = int(np.argmax(dense))                               # the occlusal (dental) slice
+                keep = int(105.0 / sp[2])                                # +-105 mm spans chin to condyles either way
+                Z0, Z1 = max(0, zc - keep), min(sz[2], zc + keep)
+                if Z1 - Z0 < sz[2]:
+                    sub = crop_img[:, :, Z0:Z1]
+                    fine_nifti = os.path.join(work_dir, "ct_head.nii.gz")
+                    sitk.WriteImage(sub, fine_nifti)
+                    fine_img = sub
+                    paste = (Z0, 0, 0)                                   # numpy (z,y,x) offset back into the full crop
+                    log("kept the jaw slab around the teeth:", sub.GetSize(), "from", sz)
+        except Exception as e:
+            log("jaw slab skipped:", e)
+    shutil.copyfile(fine_nifti, os.path.join(in_dir, "CASE_0000.nii.gz"))
+
     # RAM-aware resolution: the on-CPU segmentation map is (classes x resampled-volume). On a
     # large scan at the model's fine spacing that can be >10 GB. If free RAM is too small,
     # coarsen the working spacing just enough to fit (the mandible stays well resolved). The
@@ -516,8 +532,8 @@ def run_dental_nnunet(ct_nifti, work_dir):
     try:
         import psutil
         cm = predictor.configuration_manager
-        sh = np.array(crop_img.GetSize(), dtype=float)          # sitk (x,y,z)
-        isp = np.array(crop_img.GetSpacing(), dtype=float)      # sitk (x,y,z)
+        sh = np.array(fine_img.GetSize(), dtype=float)          # sitk (x,y,z)
+        isp = np.array(fine_img.GetSpacing(), dtype=float)      # sitk (x,y,z)
         tgt = np.array(cm.spacing, dtype=float)                 # working order (y,z,x)
         n_cls = len(predictor.dataset_json.get("labels", {})) or 6
         # SPEED: the mandible does not need the model's finest spacing (~0.31 mm); cap the
@@ -550,13 +566,12 @@ def run_dental_nnunet(ct_nifti, work_dir):
     # here just means the mandible appears once at the end instead of growing bottom to top.
     if RP is not None and isinstance(predictor, RP):
         try:
-            D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
-            predictor.z_ascending = bool(D[2, 2] >= 0)          # reveal toward anatomical superior
+            D = np.array(fine_img.GetDirection(), float).reshape(3, 3)
+            predictor.z_ascending = bool(D[2, 2] >= 0)          # tiles bottom to top: mandible forms first
             tb = list(predictor.plans_manager.transpose_backward)
-            pz = int(predictor.configuration_manager.patch_size[1])   # working-Z patch length
             dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug", "segmentation")
-            predictor.reveal_cb = _make_reveal(crop_img, grow_dir, predictor.configuration_manager,
-                                               tb, pz, 5, debug_dir=dbg)
+            predictor.reveal_cb = _make_reveal(fine_img, grow_dir, predictor.configuration_manager,
+                                               tb, debug_dir=dbg)
             log("progressive reveal on (z_ascending=%s)" % predictor.z_ascending)
         except Exception as e:
             log("reveal wiring skipped:", e)
@@ -572,8 +587,19 @@ def run_dental_nnunet(ct_nifti, work_dir):
     io = SimpleITKIO()
     try:
         img, props = io.read_images([os.path.join(in_dir, "CASE_0000.nii.gz")])
-        seg = predictor.predict_single_npy_array(img, props, None, None, False)
-        io.write_seg(seg, out_path, props)
+        seg = predictor.predict_single_npy_array(img, props, None, None, False)   # (z,y,x) at fine geometry
+        if paste is not None:
+            # paste the head-crop labels back into the full bone-crop frame so the saved mask and
+            # the edit bundle keep the geometry the rest of the pipeline expects
+            Z0, Y0, X0 = paste
+            gz, gy, gx = crop_img.GetSize()[2], crop_img.GetSize()[1], crop_img.GetSize()[0]
+            full = np.zeros((gz, gy, gx), dtype=np.uint8)
+            full[Z0:Z0 + seg.shape[0], Y0:Y0 + seg.shape[1], X0:X0 + seg.shape[2]] = seg.astype(np.uint8)
+            out_img = sitk.GetImageFromArray(full)
+            out_img.CopyInformation(crop_img)
+            sitk.WriteImage(out_img, out_path)
+        else:
+            io.write_seg(seg, out_path, props)
     except Exception as e:
         # Same model as MOOSE, so a memory failure would fail there too: give a clear message
         # instead of falling back and failing again.
