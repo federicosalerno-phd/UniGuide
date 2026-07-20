@@ -58,6 +58,10 @@ REGIONS = {
                    5: "MandibularCanal", 6: "Tumour"},
         "largest_only": {1, 2},          # skull and mandible are one connected bone each
         "constrain_to_host": {5: 2},     # canal (5) must live inside the mandible (2)
+        # Only mesh what the reconstruction needs: the mandible and the nerve canal. The full
+        # 5-label mask is still saved in the bundle, so skull/teeth stay editable, but we skip
+        # the very large skull mesh so the result is fast. The tumour is drawn by hand later.
+        "stl_labels": {2, 5},
     },
     "leg": {
         "moose_model": "clin_ct_peripheral_bones",
@@ -326,8 +330,9 @@ def run_dental_nnunet(ct_nifti, work_dir):
         tgt = np.array(cm.spacing, dtype=float)
         n_cls = len(predictor.dataset_json.get("labels", {})) or 6
         # SPEED: the mandible does not need the model's finest spacing (~0.31 mm); cap the
-        # working spacing so the head segments about 2x faster with negligible loss on bone.
-        work = np.maximum(tgt, 0.5)
+        # working spacing so the head segments several times faster with negligible loss on
+        # the bone surface (sub-mm is plenty for a cutting guide).
+        work = np.maximum(tgt, 0.6)
         # RAM: coarsen further if the on-CPU map would not fit the free memory.
         soft_gb = float(np.prod(np.ceil(sh * isp / work))) * n_cls * 4 / 1e9
         free_gb = psutil.virtual_memory().available / 1e9
@@ -413,16 +418,20 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
     labels = region_cfg["labels"]
     largest_only = region_cfg["largest_only"]
     constrain = region_cfg["constrain_to_host"]
+    stl_set = region_cfg.get("stl_labels")   # None => mesh every label; else only these
 
-    # build cleaned masks first (hosts may be needed for constraints)
+    # only the labels we actually mesh (+ any constraint hosts they need)
+    mesh_labels = set(labels) if stl_set is None else set(stl_set)
+    need = set(mesh_labels) | {constrain[l] for l in mesh_labels if l in constrain}
+
     masks = {}
     for lab in labels:
-        if lab not in present:
+        if lab not in present or lab not in need:
             continue
         masks[lab] = clean_components(arr == lab, largest_only=(lab in largest_only))
 
     out = {}
-    todo = [(lab, name) for lab, name in labels.items() if lab in masks]
+    todo = [(lab, name) for lab, name in labels.items() if lab in masks and lab in mesh_labels]
 
     def _prio(name):                       # build the bone you need FIRST, the big skull last
         n = name.lower()
