@@ -280,8 +280,24 @@ def _crop_to_bone(nifti_path, out_path, thr=150, margin_mm=10.0):
     mask = arr > thr
     if int(mask.sum()) < 5000:
         return nifti_path
-    zz, yy, xx = np.where(mask)
     sx, sy, sz = img.GetSpacing()
+    # Drop the burned-in annotation text (patient name, "BONE+/W630", kV) that CT scanners
+    # paint into the image corners. Those pixels are bright, so a plain threshold treats them
+    # as bone and the bbox stretches out to the corners. The text sits in tiny blobs that are
+    # disconnected from the body, so keep only connected components big enough to be real bone
+    # (>= 0.5 cm3), which removes the text while keeping the skull, mandible and spine.
+    try:
+        from scipy import ndimage
+        lab, n = ndimage.label(mask)
+        if n > 1:
+            counts = np.bincount(lab.ravel())
+            counts[0] = 0
+            keep = np.where(counts * (sx * sy * sz) >= 500.0)[0]
+            if len(keep):
+                mask = np.isin(lab, keep)
+    except Exception as e:
+        log("bone-component cleanup skipped:", e)
+    zz, yy, xx = np.where(mask)
     mx, my, mz = int(margin_mm / sx), int(margin_mm / sy), int(margin_mm / sz)
     x0, x1 = max(0, int(xx.min()) - mx), min(arr.shape[2], int(xx.max()) + mx + 1)
     y0, y1 = max(0, int(yy.min()) - my), min(arr.shape[1], int(yy.max()) + my + 1)
