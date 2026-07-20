@@ -308,6 +308,167 @@ def _crop_to_bone(nifti_path, out_path, thr=150, margin_mm=10.0):
     return out_path
 
 
+def _reveal_predictor_class():
+    """A nnUNetPredictor subclass that reveals the finalized Z-bands DURING the sliding window,
+    so the mandible can grow bottom to top in the UI while a SINGLE in-process inference runs:
+    no extra GPU work, no seams, same memory as the plain run. Returns None if the nnU-Net
+    internals it overrides are missing, so the caller falls back to the stock predictor.
+    Verified against nnU-Net 2.8.1 (predict_from_raw_data._internal_predict_sliding_window_*)."""
+    try:
+        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+        from nnunetv2.inference.sliding_window_prediction import compute_gaussian
+        from nnunetv2.utilities.helpers import empty_cache
+        from queue import Queue
+        from threading import Thread
+        from tqdm import tqdm
+        import torch
+    except Exception as e:
+        log("reveal predictor unavailable, using the plain one:", e)
+        return None
+
+    class RevealPredictor(nnUNetPredictor):
+        reveal_cb = None       # reveal_cb(logits, n_predictions, frontier_working_z, ascending)
+        z_ascending = True
+
+        def _internal_get_sliding_window_slicers(self, image_size):
+            s = super()._internal_get_sliding_window_slicers(image_size)
+            # work the tiles bottom to top (working Z is slicer index 2) so the mandible body
+            # finalizes first; flip when the scan's superior direction runs the other way.
+            try:
+                s.sort(key=lambda sl: sl[2].start, reverse=not self.z_ascending)
+            except Exception as e:
+                log("slicer sort skipped:", e)
+            return s
+
+        @torch.inference_mode()
+        def _internal_predict_sliding_window_return_logits(self, data, slicers, do_on_device=True):
+            # Verbatim copy of nnUNetPredictor's method (nnU-Net 2.8.1) with ONE added reveal
+            # hook. If anything in the hook fails it disables itself and the inference finishes
+            # exactly as the stock method would, so behaviour degrades safely.
+            predicted_logits = n_predictions = prediction = gaussian = workon = None
+            results_device = self.device if do_on_device else torch.device("cpu")
+
+            def producer(d, slh, q):
+                for s in slh:
+                    q.put((torch.clone(d[s][None], memory_format=torch.contiguous_format).to(self.device), s))
+                q.put("end")
+
+            try:
+                empty_cache(self.device)
+                data = data.to(results_device)
+                queue = Queue(maxsize=2)
+                t = Thread(target=producer, args=(data, slicers, queue), daemon=True)
+                t.start()
+                predicted_logits = torch.zeros((self.label_manager.num_segmentation_heads, *data.shape[1:]),
+                                               dtype=torch.half, device=results_device)
+                n_predictions = torch.zeros(data.shape[1:], dtype=torch.half, device=results_device)
+                if self.use_gaussian:
+                    gaussian = compute_gaussian(tuple(self.configuration_manager.patch_size), sigma_scale=1. / 8,
+                                                value_scaling_factor=10, device=results_device)
+                else:
+                    gaussian = 1
+                last_start = [None]
+                with tqdm(desc=None, total=len(slicers), disable=not self.allow_tqdm) as pbar:
+                    while True:
+                        item = queue.get()
+                        if item == "end":
+                            queue.task_done()
+                            break
+                        workon, sl = item
+                        prediction = self._internal_maybe_mirror_and_predict(workon)[0].to(results_device)
+                        if self.use_gaussian:
+                            prediction *= gaussian
+                        predicted_logits[sl] += prediction
+                        n_predictions[sl[1:]] += gaussian
+                        queue.task_done()
+                        pbar.update()
+                        # A tile with a new Z-start means every tile below it is finished, so the
+                        # band up to that start is final: reveal it. One reveal per Z step, a few
+                        # per run. (The very top band is completed by the final STL_READY.)
+                        if self.reveal_cb is not None:
+                            try:
+                                cur = int(sl[2].start)
+                                if last_start[0] is None:
+                                    last_start[0] = cur
+                                elif (cur > last_start[0]) if self.z_ascending else (cur < last_start[0]):
+                                    self.reveal_cb(predicted_logits, n_predictions, cur, self.z_ascending)
+                                    last_start[0] = cur
+                            except Exception as ex:
+                                log("reveal hook disabled:", ex)
+                                self.reveal_cb = None
+                queue.join()
+                torch.div(predicted_logits, n_predictions, out=predicted_logits)
+                if torch.any(torch.isinf(predicted_logits)):
+                    raise RuntimeError("Encountered inf in predicted array.")
+                return predicted_logits
+            except Exception as e:
+                del predicted_logits, n_predictions, prediction, gaussian, workon
+                empty_cache(self.device)
+                empty_cache(results_device)
+                raise e
+
+    return RevealPredictor
+
+
+def _save_grow_png(mand_w, debug_dir, step):
+    """Debug: a coronal MIP of the growing mandible mask, so the build is visible on disk too."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        os.makedirs(debug_dir, exist_ok=True)
+        mip = mand_w.max(axis=0)                         # (Y',Z',X') -> (Z',X'), Z up
+        fig, ax = plt.subplots(figsize=(4, 4))
+        ax.imshow(mip, cmap="magma", origin="lower", interpolation="nearest")
+        ax.set_title("mandible grow, step %d" % step)
+        ax.axis("off")
+        p = os.path.join(debug_dir, "grow_%02d.png" % step)
+        fig.savefig(p, dpi=70, bbox_inches="tight")
+        plt.close(fig)
+        log("GROW_PNG %s" % p)
+    except Exception as e:
+        log("grow png skipped:", e)
+
+
+def _make_reveal(crop_img, grow_dir, cm, transpose_back, nominal, debug_dir=None):
+    """Build the reveal callback: mesh the mandible in the finalized Z-band so far, in the CT
+    physical frame, and emit an STL_GROW line the UI turns into the growing 3D mandible."""
+    os.makedirs(grow_dir, exist_ok=True)
+    sp_w = (float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1]))  # working (y,z,x) -> sitk (x,y,z)
+    origin = crop_img.GetOrigin()
+    direction = crop_img.GetDirection()
+    state = {"step": 0, "mand": None}
+
+    def cb(logits, npred, frontier, ascending):
+        # logits: (C, Y', Z', X') working grid; npred: (Y', Z', X'); frontier: working Z index.
+        if state["mand"] is None:
+            state["mand"] = np.zeros(tuple(int(x) for x in logits.shape[1:]), dtype=bool)  # (Y',Z',X')
+        Zw = state["mand"].shape[1]
+        lo, hi = (0, int(frontier)) if ascending else (int(frontier), Zw)
+        if hi <= lo:
+            return
+        nd = npred[:, lo:hi, :].clamp(min=1e-4)
+        seg = (logits[:, :, lo:hi, :] / nd).argmax(0).to("cpu").numpy().astype(np.uint8)   # (Y',hb,X')
+        state["mand"][:, lo:hi, :] = (seg == 2)
+        state["step"] += 1
+        arr = np.ascontiguousarray(state["mand"].transpose(transpose_back))   # -> (Z',Y',X') for sitk
+        arr = clean_components(arr, largest_only=False).astype(np.uint8)       # keep lagging ramus/condyle
+        img_w = sitk.GetImageFromArray(arr)
+        img_w.SetSpacing(sp_w)
+        img_w.SetOrigin(origin)
+        img_w.SetDirection(direction)
+        mesh = mask_to_mesh(arr > 0, img_w, smooth_iter=6)
+        if mesh is None:
+            return
+        path = os.path.join(grow_dir, "Mandible_grow_%d.stl" % state["step"])
+        mesh.export(path)
+        log("STL_GROW Mandible %s %d %d" % (path, min(state["step"], nominal), nominal))
+        if debug_dir:
+            _save_grow_png(state["mand"], debug_dir, state["step"])
+
+    return cb
+
+
 def run_dental_nnunet(ct_nifti, work_dir):
     """Head path: run DentalSegmentator directly (nnU-Net, no test-time mirroring) so it is
     faster than MOOSE AND streams a real percentage. Returns the label map, or None to fall
@@ -318,20 +479,34 @@ def run_dental_nnunet(ct_nifti, work_dir):
         return None
     import torch
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+    from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
     in_dir = os.path.join(work_dir, "nn_in")
     out_dir = os.path.join(work_dir, "nn_out")
+    grow_dir = os.path.join(work_dir, "grow")
     os.makedirs(in_dir, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
     cropped = _crop_to_bone(ct_nifti, os.path.join(work_dir, "ct_bone.nii.gz"))
     shutil.copyfile(cropped, os.path.join(in_dir, "CASE_0000.nii.gz"))
+    crop_img = sitk.ReadImage(cropped)
+    # tell the UI how big the anatomy is, so it frames the camera once and holds it steady while
+    # the mandible grows (half the crop's space diagonal, in mm)
+    _ext = np.array(crop_img.GetSize(), float) * np.array(crop_img.GetSpacing(), float)
+    log("FRAME %.1f" % (0.5 * float(np.linalg.norm(_ext))))
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log("dental nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
-    predictor = nnUNetPredictor(
-        tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
-        perform_everything_on_device=(dev.type == "cuda" and False),
-        device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
+    _args = dict(tile_step_size=0.5, use_gaussian=True, use_mirroring=False,
+                 perform_everything_on_device=(dev.type == "cuda" and False),
+                 device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
     use_fold = int(fold) if str(fold).isdigit() else fold
-    predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
+    RP = _reveal_predictor_class()          # progressive predictor, or None to use the plain one
+    try:
+        predictor = (RP or nnUNetPredictor)(**_args)
+        predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
+    except Exception as e:
+        log("reveal predictor init failed, using the plain one:", e)
+        RP = None
+        predictor = nnUNetPredictor(**_args)
+        predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
 
     # RAM-aware resolution: the on-CPU segmentation map is (classes x resampled-volume). On a
     # large scan at the model's fine spacing that can be >10 GB. If free RAM is too small,
@@ -340,34 +515,46 @@ def run_dental_nnunet(ct_nifti, work_dir):
     try:
         import psutil
         cm = predictor.configuration_manager
-        in_img = sitk.ReadImage(os.path.join(in_dir, "CASE_0000.nii.gz"))
-        sh = np.array(in_img.GetSize(), dtype=float)
-        isp = np.array(in_img.GetSpacing(), dtype=float)
-        tgt = np.array(cm.spacing, dtype=float)
+        sh = np.array(crop_img.GetSize(), dtype=float)          # sitk (x,y,z)
+        isp = np.array(crop_img.GetSpacing(), dtype=float)      # sitk (x,y,z)
+        tgt = np.array(cm.spacing, dtype=float)                 # working order (y,z,x)
         n_cls = len(predictor.dataset_json.get("labels", {})) or 6
         # SPEED: the mandible does not need the model's finest spacing (~0.31 mm); cap the
-        # working spacing so the head segments several times faster with negligible loss on
-        # the bone surface (sub-mm is plenty for a cutting guide).
-        # Never resample FINER than the data really is: a 1 mm coronal series upsampled to
-        # 0.6 mm would triple the voxel count for no extra detail (and can blow up RAM). Floor
-        # the working spacing at the input's own finest axis.
-        base = max(0.6, float(isp.min()))
-        work = np.maximum(tgt, base)
-        # RAM: coarsen further if the on-CPU map would not fit the free memory.
-        soft_gb = float(np.prod(np.ceil(sh * isp / work))) * n_cls * 4 / 1e9
+        # working spacing so the head segments several times faster with negligible loss on the
+        # bone surface. Floor it PER AXIS at the data's own spacing so no axis is ever upsampled
+        # (a coarse through-plane axis pulled finer would blow up RAM for no added detail).
+        # cm.spacing is in working order (y,z,x) = sitk (sy,sz,sx), so reorder the sitk spacing.
+        TARGET_MAND = 0.6
+        isp_w = isp[[1, 2, 0]]                                  # sitk (x,y,z) -> working (y,z,x)
+        work = np.maximum(tgt, np.maximum(TARGET_MAND, isp_w))
+        # RAM: coarsen further if the on-CPU map would not fit free memory (physical extent over
+        # the working voxel volume, times the class count, fp32).
+        soft_gb = float(np.prod(sh * isp) / np.prod(work)) * n_cls * 4 / 1e9
         free_gb = psutil.virtual_memory().available / 1e9
-        # keep the on-CPU map to ~a third of free RAM: the model, the resampled copies and the
-        # mesh step all need memory too, so leave plenty of headroom.
-        budget = max(1.5, free_gb * 0.35)
+        budget = max(1.5, free_gb * 0.35)   # leave RAM for the model, the copies and the mesh
         if soft_gb > budget:
-            work = work * (soft_gb / budget) ** (1.0 / 3.0)
-            soft_gb = budget
+            work = np.minimum(work * (soft_gb / budget) ** (1.0 / 3.0), 0.9)  # keep mandible usable
+            soft_gb = float(np.prod(sh * isp) / np.prod(work)) * n_cls * 4 / 1e9
             log("low RAM: %.1f GB free; coarsening to fit" % free_gb)
         cm.configuration["spacing"] = work.tolist()
         log("working spacing %s, map ~%.1f GB, %.1f GB free"
             % ([round(x, 2) for x in work], soft_gb, free_gb))
     except Exception as e:
         log("RAM check skipped:", e)
+
+    # Wire the progressive reveal now that the working spacing is fixed. Guarded: any failure
+    # here just means the mandible appears once at the end instead of growing bottom to top.
+    if RP is not None and isinstance(predictor, RP):
+        try:
+            D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
+            predictor.z_ascending = bool(D[2, 2] >= 0)          # reveal toward anatomical superior
+            tb = list(predictor.plans_manager.transpose_backward)
+            dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug", "segmentation")
+            predictor.reveal_cb = _make_reveal(crop_img, grow_dir, predictor.configuration_manager,
+                                               tb, 5, debug_dir=dbg)
+            log("progressive reveal on (z_ascending=%s)" % predictor.z_ascending)
+        except Exception as e:
+            log("reveal wiring skipped:", e)
 
     log("PHASE preparing the model")   # fills the silent gap before the sliding window starts
 
@@ -376,7 +563,6 @@ def run_dental_nnunet(ct_nifti, work_dir):
     # parent runs low on memory those workers get orphaned and keep holding RAM, which then
     # starves every later run (this is what made back-to-back segmentations cascade into
     # failure). The single-array path does everything in this one process, so nothing leaks.
-    from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
     out_path = os.path.join(out_dir, "CASE.nii.gz")
     io = SimpleITKIO()
     try:
@@ -488,16 +674,23 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
         mask = masks[lab]
         host = constrain.get(lab)
         if host is not None and host in masks:
+            if "canal" in name.lower():
+                mask = ndimage.binary_closing(mask, iterations=1)   # heal the thin canal before clipping
             mask = constrain_to(mask, masks[host], spacing)
             mask = clean_components(mask, largest_only=False)
-        mesh = mask_to_mesh(mask, img)
-        if mesh is None:
-            log("label", lab, name, "too small after cleanup"); continue
-        path = os.path.join(out_dir, name + ".stl")
-        mesh.export(path)
-        log("wrote", name, len(mesh.vertices), "verts ->", path)
-        log("STL_READY %s %s" % (name, path))   # UI loads it live
-        out[name] = path
+        # A secondary structure failing to mesh (a thin canal, say) must never sink the whole
+        # run: the mandible is built first and already emitted, so keep going.
+        try:
+            mesh = mask_to_mesh(mask, img)
+            if mesh is None:
+                log("label", lab, name, "too small after cleanup"); continue
+            path = os.path.join(out_dir, name + ".stl")
+            mesh.export(path)
+            log("wrote", name, len(mesh.vertices), "verts ->", path)
+            log("STL_READY %s %s" % (name, path))   # UI loads it live
+            out[name] = path
+        except Exception as e:
+            log("mesh skipped for %s: %s" % (name, e))
     return out
 
 

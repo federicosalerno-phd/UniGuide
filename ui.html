@@ -803,7 +803,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
             <button class="btn-outline" style="flex:1" onclick="segEdit()" title="Correct the result, or draw by hand on the CT slices">Edit on slices</button>
           </div>
           <div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:10px"><span id="segSpin" class="segspin" style="display:none"></span><span id="segStatus" style="color:var(--t2);font-size:12px"></span></div>
-          <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal);transition:width 1s cubic-bezier(.4,0,.2,1)"></div></div>
+          <div id="segBarWrap" style="display:none;height:6px;background:#0f1215;border-radius:4px;overflow:hidden;margin-top:2px"><div id="segBar" style="height:100%;width:0%;background:var(--teal)"></div></div>
           <div id="segProg" style="display:none;background:#0f1215;border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:8px 10px;max-height:110px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:var(--t2);white-space:pre-wrap;margin-top:8px"></div>
           <div class="note" style="margin-top:12px">Already have the STL files? Go to <b>Model</b> to load them directly.</div>
         </div>
@@ -4388,6 +4388,66 @@ function segBar(pct){ const wrap=$('segBarWrap'), bar=$('segBar');
   if(pct===null){ wrap.style.display='block'; bar.classList.add('segbar-indet'); bar.style.width='35%'; }
   else if(pct<0){ wrap.style.display='none'; bar.classList.remove('segbar-indet'); }
   else { wrap.style.display='block'; bar.classList.remove('segbar-indet'); bar.style.width=Math.max(2,pct)+'%'; } }
+// Smooth, monotonic progress bar driven by requestAnimationFrame so it never jumps or stutters.
+// Any source (the tile counter, the grow chunks, the final steps) just raises the target and the
+// animator eases toward it.
+let segA={shown:0,target:0,raf:0,on:false};
+function segProg(t){ const wrap=$('segBarWrap'),bar=$('segBar'); if(wrap)wrap.style.display='block'; if(bar)bar.classList.remove('segbar-indet');
+  segA.target=Math.min(100,Math.max(segA.target,t)); if(!segA.on)segAnim(); }
+function segAnim(){ segA.on=true; let last=performance.now();
+  (function f(now){ const dt=Math.min(0.05,(now-last)/1000); last=now;
+    segA.shown+=(Math.max(segA.shown,segA.target)-segA.shown)*(1-Math.exp(-3.2*dt));   // ~300 ms ease
+    const bar=$('segBar'); if(bar) bar.style.width=Math.max(2,segA.shown).toFixed(2)+'%';
+    if(segA.shown<99.5||segA.target<100){ segA.raf=requestAnimationFrame(f); } else { segA.on=false; }
+  })(last); }
+function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,raf:0,on:false}; const bar=$('segBar'); if(bar)bar.style.width='2%'; }
+
+// Progressive mandible: a light preview mesh that grows bottom to top WHILE the model runs. It is
+// purely visual; the authoritative mandible is loaded once at the end by ingestModel. Each chunk
+// keeps the SAME anchor so the mandible grows in place instead of sliding.
+let _growPreview=null,_growOff=null;
+function segGrowStl(path,k,n){
+  if(segState.region!=='head') return;
+  if(!(B&&B.seg_read_stl)) return;
+  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
+    if(!d||d.error||!d.positions||d.positions.length<9) return;
+    if(!renderer){ initGL(); loop(); }
+    if(!modelPivot) return;
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(d.positions,3));
+    g.computeVertexNormals(); g.computeBoundingBox();
+    if(!_growPreview){ const c=new THREE.Vector3(); g.boundingBox.getCenter(c); _growOff=c;
+      g.translate(-c.x,-c.y,-c.z);
+      if(boneMesh&&isDemo) boneMesh.visible=false;                 // tuck the demo arch away
+      _growPreview=new THREE.Mesh(g,M_bone()); _growPreview.name='growPreview'; modelPivot.add(_growPreview);
+      fitObject(_growPreview);
+    } else { g.translate(-_growOff.x,-_growOff.y,-_growOff.z);      // same anchor -> grows in place
+      _growPreview.geometry.dispose(); _growPreview.geometry=g; }
+    if($('stTri'))$('stTri').textContent=Math.round(d.positions.length/9).toLocaleString();
+    $('segStatus').textContent=(k<n?'building the mandible ':'mandible ready ')+k+'/'+n;
+    segProg(15+70*k/Math.max(1,n)); invalidate();
+  });
+}
+function segClearGrow(){ if(_growPreview){ disposeMesh(_growPreview); _growPreview=null; } _growOff=null;
+  if(boneMesh&&isDemo) boneMesh.visible=true; }
+function segShowCanal(path){
+  if(!(B&&B.seg_read_stl)) return;
+  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
+    if(!d||d.error||!d.positions||d.positions.length<9) return;
+    if(!modelPivot) return;
+    if(window._canalMesh) disposeMesh(window._canalMesh);
+    const off=window._mandCentroid||new THREE.Vector3();
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(d.positions,3));
+    g.translate(-off.x,-off.y,-off.z);              // align to the centered mandible in modelPivot
+    g.computeVertexNormals();
+    const col=(typeof ED_COLORS!=='undefined'&&ED_COLORS[5])||[255,220,40];
+    const m=new THREE.MeshStandardMaterial({color:(col[0]<<16)|(col[1]<<8)|col[2],emissive:0x1a1400,roughness:.5,metalness:0});
+    const mesh=new THREE.Mesh(g,m); mesh.name='canal'; mesh.renderOrder=2; modelPivot.add(mesh);
+    window._canalMesh=mesh; invalidate();
+    $('segStatus').textContent='nerve canal loaded';
+  });
+}
 function segPickFolder(){
   if(!(B&&B.seg_pick_dicom_dir))return;
   B.seg_pick_dicom_dir(function(d){ if(!d)return; segState.folder=d; $('segFolder').textContent=d;
@@ -4399,7 +4459,7 @@ function segStart(){
   const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
   if(!s){ toast('Choose a series first.'); return; }
   segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='preparing';
-  segBusy(true); segBar(null);
+  segBusy(true); segAnimReset(); segProg(2);
   B.seg_run(s.folder, s.series_id, segState.region);
 }
 function segEdit(){
@@ -4471,19 +4531,23 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
-      const sr=e.text.match(/STL_READY (\S+) (.+)/);
-      if(sr){ segShowStl(sr[1], sr[2].trim()); return; }
-      const ph=e.text.match(/PHASE (.+)/);
-      if(ph){ $('segStatus').textContent=ph[1].trim(); segBar(null); return; }
-      let m=e.text.match(/(\d+)\/(\d+)\s*\[/);
-      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent=(p>=100?'finishing, building the models':'segmenting '+p+'%'); segBar(p>=100?null:p); return; }
+      const fr=e.text.match(/\bFRAME\s+([\d.]+)/);
+      if(fr){ segState.frameR=parseFloat(fr[1]); return; }
+      const sg=e.text.match(/\bSTL_GROW\s+\S+\s+(.+?)\s+(\d+)\s+(\d+)\s*$/);   // <name> <path> <k> <n>
+      if(sg){ segGrowStl(sg[1].trim(), +sg[2], +sg[3]); return; }
+      const sr=e.text.match(/\bSTL_READY (\S+) (.+)/);
+      if(sr){ if(/Mandible|Fibula/.test(sr[1])) segProg(92); segShowStl(sr[1], sr[2].trim()); return; }
+      const ph=e.text.match(/\bPHASE (.+)/);
+      if(ph){ $('segStatus').textContent=ph[1].trim(); return; }
+      let m=e.text.match(/(\d+)\/(\d+)\s*\[/);           // tqdm tile counter -> smooth 5..85%
+      if(m){ const p=100*(+m[1])/(+m[2]); segProg(Math.min(85,5+0.8*p)); $('segStatus').textContent=(p>=100?'finishing, building the mandible':'segmenting '+Math.round(p)+'%'); return; }
       m=e.text.match(/copying:\s*(\d+)\/(\d+)/i);
-      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='copying the scan '+p+'%'; segBar(p); return; }
-      if(/Predicting|preprocess/i.test(e.text)){ $('segStatus').textContent='preparing the model'; segBar(null); return; }
+      if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='copying the scan '+p+'%'; segProg(p*0.05); return; }
+      if(/Predicting|preprocess/i.test(e.text)){ $('segStatus').textContent='preparing the model'; return; }
     }
-    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
+    else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); segAnimReset(); segClearGrow(); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
-      segState.running=false; $('segStartBtn').disabled=false; segBusy(false);
+      segState.running=false; $('segStartBtn').disabled=false; segProg(100); segClearGrow(); segBusy(false);
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
       if(!r||!r.ok){ const em=(r&&r.error)||'no result';
         if(/LOW_MEMORY|RAM|out of memory|workers died/i.test(em)){ $('segStatus').textContent='not enough free memory'; segLog('Not enough free RAM for this scan at full resolution. Close other apps, the browser especially, then try again. You have plenty of RAM total, it is just busy right now.'); }
@@ -4495,8 +4559,10 @@ function onSegEvent(s){
 }
 function segShowStl(name, path){
   $('segStatus').textContent=name+' ready';
+  if(name==='MandibularCanal'){ segShowCanal(path); return; }   // nerve overlay, not the bone path
   const primary = (segState.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
   if(name!==primary) return;                 // load the main bone live so it appears in 3D
+  segClearGrow();                            // drop the growing preview; the authoritative mesh takes over
   B.seg_read_stl(path, function(s){ let d={}; try{d=JSON.parse(s);}catch(x){}
     if(!d||d.error)return;
     if(segState.region==='head') ingestModel(d.positions,name); else ingestFibula(d.positions,name); });
@@ -6330,6 +6396,8 @@ function ingestModel(positions,name){
   geo.computeVertexNormals();
   geo.computeBoundingBox(); const ctr=new THREE.Vector3(); geo.boundingBox.getCenter(ctr);
   geo.translate(-ctr.x,-ctr.y,-ctr.z);          // center so the camera framing works
+  window._mandCentroid=ctr.clone();             // so the nerve canal overlay lands inside the mandible
+  if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
   boneMesh=new THREE.Mesh(geo,M_bone()); boneMesh.name='bone'; modelPivot.add(boneMesh); isDemo=false;
   // Keep a default arch so the downstream plane/guide steps stay operational.
   // NOTE: this demo arch does NOT yet align to an arbitrary mesh; importing the
