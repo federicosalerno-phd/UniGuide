@@ -4358,9 +4358,9 @@ function segRecommendSeries(){            // auto-pick the best series for the c
   segState.series.forEach(function(s,i){
     const d=(s.description||'').toLowerCase(), f=(s.rel||'').toLowerCase(), thk=parseFloat(s.thickness)||5, n=s.slices||0;
     if(n<40)return;                       // skip scouts / tiny series
-    const isLeg=/angio|arti|inferior|gamb|aaii/.test(f);   // the folder tells head from leg
+    const isLeg=/angio|arti|inferior|gamb|aaii|\bleg\b/.test(f);   // the folder tells head from leg
     let score=0;
-    if(region==='head'){ if(isLeg)return; if(/massicc|collo|facial|testa|cranio|\bmf\b|\btc\b/.test(f))score+=60; if(/osso|bone/.test(d))score+=100; if(/massicc|collo/.test(d))score+=20; }
+    if(region==='head'){ if(isLeg)return; if(/massicc|collo|facial|testa|cranio|\bmf\b|\btc\b|\bhead\b/.test(f))score+=60; if(/osso|bone/.test(d))score+=100; if(/massicc|collo/.test(d))score+=20; }
     else { if(!isLeg)return; if(/angio/.test(d))score+=100; if(/arti|inferior|gamb/.test(d))score+=20; }
     score += Math.max(0,5-thk)*12;        // finer slices are better for bone
     score += Math.min(n,1500)/150;

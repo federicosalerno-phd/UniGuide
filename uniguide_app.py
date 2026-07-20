@@ -312,7 +312,8 @@ class Backend(QObject):
         then a Tests folder next to the app. Reading DICOM off a network drive is slow, so the
         local copy (made once) is opened first."""
         for c in (os.environ.get("UNIGUIDE_CASES_DIR", "").strip(),
-                  r"D:/UniGuide_Patients", str(Path.home() / "UniGuide_Patients")):
+                  r"D:/UniGuide_Clean", r"D:/UniGuide_Patients",
+                  str(Path.home() / "UniGuide_Patients")):
             if c and Path(c).is_dir():
                 return c
         cand = _res_dir().parent / "Tests"
