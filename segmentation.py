@@ -51,8 +51,11 @@ import trimesh
 REGIONS = {
     "head": {
         "moose_model": "clin_ct_dental",
-        # DentalSegmentator (Dataset112) native label indices, preserved by MOOSE.
-        "labels": {1: "Skull", 2: "Mandible", 3: "UpperTeeth", 4: "LowerTeeth", 5: "MandibularCanal"},
+        # DentalSegmentator (Dataset112) native label indices 1-5, preserved by MOOSE.
+        # Label 6 (Tumour) is not produced by the model: it is there so the editor offers it
+        # for the surgeon to DRAW the tumour mass on the slices, then re-mesh it to an STL.
+        "labels": {1: "Skull", 2: "Mandible", 3: "UpperTeeth", 4: "LowerTeeth",
+                   5: "MandibularCanal", 6: "Tumour"},
         "largest_only": {1, 2},          # skull and mandible are one connected bone each
         "constrain_to_host": {5: 2},     # canal (5) must live inside the mandible (2)
     },

@@ -4432,8 +4432,9 @@ function onSegEvent(s){
         B.seg_read_stl(r.stl, function(t){ let d={}; try{d=JSON.parse(t);}catch(x){}
           if(d.error){ $('edStatus').textContent='load failed'; return; }
           const nm=edState.remeshName||'edited';
-          if(/fibula|tibia/i.test(nm)) ingestFibula(d.positions,nm); else ingestModel(d.positions,nm);
-          toast(nm+' re-meshed and loaded.'); });
+          if(/tumour|tumor/i.test(nm)){ ingestTeeth(d.positions,nm); toast('Tumour loaded as a reference. It rides the mandible and shows in the Planes step so you can mark the red extent around the real mass.'); }
+          else if(/fibula|tibia/i.test(nm)){ ingestFibula(d.positions,nm); toast(nm+' re-meshed and loaded.'); }
+          else { ingestModel(d.positions,nm); toast(nm+' re-meshed and loaded.'); } });
       } else { $('edStatus').textContent='failed'; }
     }
     return;
@@ -4531,7 +4532,7 @@ function edSnapshot(){ if(!edState.mask)return; edState.undo.push({axis:edState.
 function edUndo(){ const u=edState.undo.pop(); if(!u){ toast('Nothing to undo.'); return; }
   if(u.axis!==edState.axis || u.z!==edState.z){ edState.axis=u.axis; edSetAxis(u.axis); edGoSlice(u.z); }
   edState.mask=u.mask; edRedraw(); edPushSlice(); }
-const ED_COLORS={1:[100,150,255],2:[255,60,60],3:[70,220,90],4:[40,220,220],5:[255,220,40],7:[255,150,60],8:[255,90,90],26:[120,220,180],27:[90,200,230]};
+const ED_COLORS={1:[100,150,255],2:[255,60,60],3:[70,220,90],4:[40,220,220],5:[255,220,40],6:[230,70,200],7:[255,150,60],8:[255,90,90],26:[120,220,180],27:[90,200,230]};
 function openEditor(bundle){
   if(!(B&&B.edit_load)){ toast('Editor needs the desktop app.'); return; }
   if(!bundle){ toast('Run a segmentation first.'); return; }
