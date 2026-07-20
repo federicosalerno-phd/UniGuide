@@ -307,12 +307,22 @@ class Backend(QObject):
         return json.dumps({"available": bool(py) and Path(self._seg_script()).exists(),
                            "python": py, "script": self._seg_script()})
 
+    def _cases_dir(self):
+        """Where the patient DICOM cases live: UNIGUIDE_CASES_DIR, else a Tests folder next
+        to the app. The dialog opens here so the user does not have to hunt for it."""
+        env = os.environ.get("UNIGUIDE_CASES_DIR", "").strip()
+        if env and Path(env).is_dir():
+            return env
+        cand = _res_dir().parent / "Tests"
+        return str(cand) if cand.is_dir() else ""
+
     @pyqtSlot(result=str)
     def seg_pick_dicom_dir(self):
-        """Native dialog to choose a folder that holds a DICOM series."""
-        d = QFileDialog.getExistingDirectory(None, "Choose the DICOM folder", self._start_dir())
+        """Native dialog to choose the patient folder; opens in the cases/Tests folder."""
+        start = getattr(self, "_seg_last_dir", "") or self._cases_dir() or self._start_dir()
+        d = QFileDialog.getExistingDirectory(None, "Choose the patient folder (DICOM)", start)
         if d:
-            self._last_dir = d
+            self._seg_last_dir = d
         return d or ""
 
     def _spawn(self, python, argv, cmd_tag):

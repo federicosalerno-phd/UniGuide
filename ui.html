@@ -4352,6 +4352,21 @@ function segEnter(){                       // called by go() when entering the S
     segSetRegion('head'); }
 }
 function closeSegmentation(){ /* the section stays open; nothing to close */ }
+function segRecommendSeries(){            // auto-pick the best series for the chosen region
+  const sel=$('segSeries'); if(!segState.series||!segState.series.length)return;
+  const region=segState.region; let best=-1, bestScore=-1;
+  segState.series.forEach(function(s,i){
+    const d=(s.description||'').toLowerCase(), thk=parseFloat(s.thickness)||5, n=s.slices||0;
+    if(n<40)return;                       // skip scouts / tiny series
+    let score=0;
+    if(region==='head'){ if(/osso|bone/.test(d))score+=100; if(/massicc|collo|facial|\bmf\b/.test(d))score+=20; }
+    else { if(/angio/.test(d))score+=100; if(/arti|inferior|leg|gamb/.test(d))score+=20; }
+    score += Math.max(0,5-thk)*12;        // finer slices are better for bone
+    score += Math.min(n,1200)/150;
+    if(score>bestScore){ bestScore=score; best=i; }
+  });
+  if(best>=0){ sel.value=String(best); $('segStatus').textContent='suggested: '+(segState.series[best].description||'series'); }
+}
 function segSetup(force){
   if(!(B&&B.seg_setup)){ toast('Setup needs the desktop app.'); return; }
   $('segSetupBtn').disabled=true; $('segSetupStatus').textContent='installing…';
@@ -4363,6 +4378,7 @@ function segSetRegion(r){
   _segActive($('segRegHead'), r==='head'); _segActive($('segRegLeg'), r==='leg');
   $('segSideWrap').style.display = r==='leg'?'block':'none';
   if(r==='leg') segSetSide(segState.side);
+  segRecommendSeries();
 }
 function segSetSide(s){ segState.side=s; _segActive($('segSideR'), s==='R'); _segActive($('segSideL'), s==='L'); }
 function segLog(t){ const p=$('segProg'); p.style.display='block'; p.textContent+=(p.textContent?'\n':'')+t; p.scrollTop=p.scrollHeight; }
@@ -4445,7 +4461,8 @@ function onSegEvent(s){
           let thk=''; if(se.thickness){ const t=parseFloat(se.thickness); thk=', '+(isNaN(t)?se.thickness:t.toFixed(1))+' mm'; }
           o.textContent=(se.description||se.modality||'series')+', '+se.slices+' slices'+thk;
           sel.appendChild(o); });
-        $('segStatus').textContent=r.series.length+' series found, pick one';
+        $('segStatus').textContent=r.series.length+' series found';
+        segRecommendSeries();
       }else{ segState.series=[]; sel.innerHTML='<option>no DICOM series found</option>'; $('segStatus').textContent='no DICOM found under this folder'; }
     }else if(e.kind==='error'){ $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     return;
