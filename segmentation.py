@@ -342,6 +342,8 @@ def run_dental_nnunet(ct_nifti, work_dir):
     except Exception as e:
         log("RAM check skipped:", e)
 
+    log("PHASE preparing the model")   # fills the silent gap before the sliding window starts
+
     try:
         predictor.predict_from_files(in_dir, out_dir, save_probabilities=False, overwrite=True,
                                      num_processes_preprocessing=1, num_processes_segmentation_export=1)

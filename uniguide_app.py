@@ -308,11 +308,13 @@ class Backend(QObject):
                            "python": py, "script": self._seg_script()})
 
     def _cases_dir(self):
-        """Where the patient DICOM cases live: UNIGUIDE_CASES_DIR, else a Tests folder next
-        to the app. The dialog opens here so the user does not have to hunt for it."""
-        env = os.environ.get("UNIGUIDE_CASES_DIR", "").strip()
-        if env and Path(env).is_dir():
-            return env
+        """Where the patient DICOM cases live. Prefer a fast LOCAL copy, then the env override,
+        then a Tests folder next to the app. Reading DICOM off a network drive is slow, so the
+        local copy (made once) is opened first."""
+        for c in (os.environ.get("UNIGUIDE_CASES_DIR", "").strip(),
+                  r"D:/UniGuide_Cases", str(Path.home() / "UniGuide_Cases")):
+            if c and Path(c).is_dir():
+                return c
         cand = _res_dir().parent / "Tests"
         return str(cand) if cand.is_dir() else ""
 
