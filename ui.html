@@ -4188,7 +4188,9 @@ function ingestFibula(positions,name){
   geo.computeVertexNormals(); geo.computeBoundingBox();
   const ctr=new THREE.Vector3(); geo.boundingBox.getCenter(ctr);
   geo.translate(-ctr.x,-ctr.y,-ctr.z);                       // own environment (never shown with the mandible)
-  geo.translate(0,-Math.max(modelRadius*6,300),0); geo.computeBoundingBox();
+  const _fdy=Math.max(modelRadius*6,300);
+  window._fibulaOffset={ctr:ctr.clone(), dy:_fdy};           // display frame: world - ctr - (0,dy,0) → the tibia reference reuses it to stay aligned
+  geo.translate(0,-_fdy,0); geo.computeBoundingBox();
   fibulaMesh=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xb9c4d0,roughness:0.6,metalness:0,side:THREE.DoubleSide}));
   fibulaMesh.name='fibula'; group.add(fibulaMesh);
   fibulaAxis=fibulaAxisFit(geo);
@@ -4506,7 +4508,7 @@ function segSlice(cornersStr,b64){
       if(window._skullMesh){ disposeMesh(window._skullMesh); window._skullMesh=null; }
     } else {                        // the leg keeps the mandible (head work) — just HIDE everything while the leg forms
       if(boneMesh)boneMesh.visible=false; if(fibulaMesh)fibulaMesh.visible=false; if(bridge)bridge.visible=false;
-      if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false;
+      if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(window._tibiaMesh)window._tibiaMesh.visible=false;
     }
     // The slices carry WORLD coordinates, so their parent must be un-transformed: use `group` (identity),
     // not modelPivot (which the Orient step rotates and which holds the mandible for the leg reveal).
@@ -4557,7 +4559,7 @@ function segStart(){
   segClearGrow(false);                          // drop any previous reveal
   if(segState.region==='leg'){                  // clear the head work off the stage right at Start, so the fibula forms on an empty view (like the head does)
     if(boneMesh)boneMesh.visible=false; if(fibulaMesh)fibulaMesh.visible=false; if(bridge)bridge.visible=false;
-    if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false;
+    if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(window._tibiaMesh)window._tibiaMesh.visible=false;
     isDemo=false; invalidate();
   }
   B.seg_run(s.folder, s.series_id, segState.region);
@@ -4659,6 +4661,7 @@ function segShowStl(name, path){
   $('segStatus').textContent=name+' ready';
   if(name==='MandibularCanal'){ segShowCanal(path); return; }   // nerve overlay, not the bone path
   if(name==='Skull'){ segShowSkull(path); return; }             // translucent context around the mandible
+  if(segState.region==='leg') return;                           // the leg loads ONLY at the end (segLoadResult) so the reveal keeps sweeping (the fibula STL is ready seconds after MOOSE, which would otherwise cut it short)
   const primary = (segState.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
   if(name!==primary) return;                 // load the main bone live so it appears in 3D
   segClearGrow(false);                        // drop the preview; the real mesh loads next, no demo flash
@@ -4682,6 +4685,20 @@ function segShowSkull(path){                                    // translucent s
     window._skullMesh=mesh; invalidate();
   });
 }
+function segShowTibia(path){                                    // translucent tibia = the LEG reference (like the skull for the head), aligned to the fibula's display frame
+  if(!(B&&B.seg_read_stl)) return;
+  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
+    if(!d||d.error||!d.positions||d.positions.length<9) return;
+    if(window._tibiaMesh) disposeMesh(window._tibiaMesh);
+    const off=window._fibulaOffset||{ctr:new THREE.Vector3(),dy:300};
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(d.positions,3));
+    g.translate(-off.ctr.x,-off.ctr.y,-off.ctr.z); g.translate(0,-off.dy,0); g.computeVertexNormals();
+    const m=new THREE.MeshStandardMaterial({color:0xe2e6ee,roughness:.75,metalness:0,transparent:true,opacity:0.30,depthWrite:false,side:THREE.BackSide});
+    const mesh=new THREE.Mesh(g,m); mesh.name='tibia'; mesh.renderOrder=-1; group.add(mesh);
+    window._tibiaMesh=mesh; invalidate();
+  });
+}
 function segLoadResult(r){
   const stls=r.stls||{};
   if(r.bundle) window.__segBundle=r.bundle;
@@ -4697,12 +4714,15 @@ function segLoadResult(r){
     // canal aligned to it. Without this the redundant final ingest would leave the canal gone.
     if(r.region==='head' && stls['MandibularCanal']) segShowCanal(stls['MandibularCanal']);
     if(r.region==='head' && stls['Skull']) segShowSkull(stls['Skull']);
+    if(r.region==='leg'){ const tk='Tibia_'+segState.side; if(stls[tk]) segShowTibia(stls[tk]); }   // the donor tibia as a translucent reference beside the fibula
     const others=Object.keys(stls).filter(function(k){return k!==key;});
     segLog('Loaded '+key+'. Also produced: '+(others.join(', ')||'none'));
     closeSegmentation(); toast(key+' segmented and loaded.');
-    // Size the canvas + reframe once layout has settled, so the model is SHARP immediately
-    // (previously it looked soft until a Model→Segment round-trip re-ran resize()).
-    requestAnimationFrame(function(){ if(typeof resize==='function')resize(); fitView(); if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate(); });
+    // Size the canvas + reframe once layout has settled. Centre on the FIBULA for a leg (it lives off
+    // at y≈−360, so fitView on the mandible/group would leave it off-screen — the "non si autocentra").
+    requestAnimationFrame(function(){ if(typeof resize==='function')resize();
+      if(r.region==='leg' && fibulaMesh){ fitObject(fibulaMesh); } else { fitView(); }
+      if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate(); });
   });
 }
 
@@ -6105,8 +6125,9 @@ let trimSolid={L:null,R:null};   // the DEBUG extruded-silhouette solids (mandib
 // go() would use (so the toggle just AND-s onto it — ON restores, OFF hides); objs() = the meshes it controls.
 const OV_ITEMS=[
   {k:'bone',  label:'Mandible',     chip:'#c9d4e3', base:()=>(curP!==DONOR)&&!(curP===1&&P.oriSubj==='fib')&&$('ct-bone').classList.contains('on'), objs:()=>boneMesh?[boneMesh]:[]},   // hidden in the Donor step and while orienting the fibula
-  {k:'skull', label:'Skull',        chip:'#e2e6ee', base:()=>(curP===SEG)&&!!window._skullMesh, objs:()=>window._skullMesh?[window._skullMesh]:[]},   // translucent context, controllable on the Segmentation step
+  {k:'skull', label:'Skull',        chip:'#e2e6ee', base:()=>(curP!==DONOR)&&!(curP===1&&P.oriSubj==='fib')&&!!window._skullMesh, objs:()=>window._skullMesh?[window._skullMesh]:[]},   // head REFERENCE: translucent context wherever the mandible shows, view-only
   {k:'canal', label:'Nerve canal',  chip:'#ffdc28', base:()=>(curP!==DONOR)&&!(curP===1&&P.oriSubj==='fib')&&!!window._canalMesh, objs:()=>window._canalMesh?[window._canalMesh]:[]},   // rides the mandible (useful to avoid the nerve when planning)
+  {k:'tibia', label:'Tibia',        chip:'#e2e6ee', base:()=>(curP===DONOR||curP===SEG)&&!!window._tibiaMesh, objs:()=>window._tibiaMesh?[window._tibiaMesh]:[]},   // leg REFERENCE beside the fibula, view-only
   {k:'resect',label:'Resect part',  chip:'#d98a7a', base:()=>(curP===SEGMENTS||curP===FIBGUIDE||curP===RECON), objs:()=>[resectMesh].concat(resectExtra||[]).filter(Boolean)},
   {k:'gL',    label:'Guide L',      chip:'#6aa3ff', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.L?[guide.L]:[]},
   {k:'gR',    label:'Guide R',      chip:'#4585e0', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.R?[guide.R]:[]},
@@ -6130,7 +6151,7 @@ function fibRows(){ const base=()=>(curP===FIBGUIDE||curP===DONOR);
     objs:()=>fibStore().filter(o=>o&&o.userData&&o.userData.fibPart==null&&o.userData.fibGi==null)});
   return rows; }
 function ovAll(){ return OV_ITEMS.flatMap(it=>it.k==='fib'?fibRows():[it]); }
-const ovState={}; const ovSt=k=>ovState[k]||(ovState[k]={show:true, op:k==='trim'?0.6:(k==='skull'?0.3:1)});   // lazy: the fib0..fibN keys only exist once the guides do; the skull starts as a faint shell
+const ovState={}; const ovSt=k=>ovState[k]||(ovState[k]={show:true, op:k==='trim'?0.6:((k==='skull'||k==='tibia')?0.3:1)});   // lazy: the fib0..fibN keys only exist once the guides do; the skull/tibia references start as faint shells
 const ovItem=k=>ovAll().find(it=>it.k===k);
 function ovElemRow(k){ const it=ovItem(k); if(!it)return ''; const st=ovSt(k), pc=Math.round(st.op*100);
   return `<div class="po-row"><input type="checkbox" ${st.show?'checked':''} onchange="ovToggle('${k}',this.checked)"><span class="po-chip" style="background:${it.chip}"></span><span class="po-lbl">${it.label}</span><input type="range" min="0" max="100" value="${pc}" oninput="ovOpac('${k}',this.value)"><span class="po-pct" id="ovOp_${k}">${pc}%</span></div>`; }
