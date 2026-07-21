@@ -258,6 +258,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
     <div class="tab locked" id="tab3" onclick="go(3)"><div class="tn" id="tn3">4</div><span>M. guides</span></div>
     <div class="tab locked" id="tab4" onclick="go(4)"><div class="tn" id="tn4">5</div><span>Connector</span></div>
     <div class="tab locked" id="tab5" onclick="go(5)"><div class="tn" id="tn5">6</div><span>Segments</span></div>
+    <div class="tab locked" id="tab12" onclick="go(12)"><div class="tn" id="tn12">8</div><span>F. model</span></div>
     <div class="tab locked" id="tab6" onclick="go(6)"><div class="tn" id="tn6">7</div><span>F. guides</span></div>
     <div class="tab locked" id="tab8" onclick="go(8)"><div class="tn" id="tn8">9</div><span>Reconstr.</span></div>
     <div class="tab locked" id="tab7" onclick="go(7)"><div class="tn" id="tn7">10</div><span>Fibula</span></div>
@@ -528,7 +529,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         </div>
         <div class="rp-foot"><div class="rp-nav">
           <button class="btn-back" onclick="go(4)">&#8592; Back</button>
-          <button class="btn-confirm" onclick="go(6)">Next &#8594;</button>
+          <button class="btn-confirm" onclick="go(12)">Next &#8594;</button>
         </div></div>
       </div>
 
@@ -669,6 +670,19 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         </div></div>
       </div>
 
+      <!-- pane 12: fibula model (preview: donor fibula + grid + axis + margins, no segments/guides) -->
+      <div class="rp-pane" id="rpFModel">
+        <div class="rp-hd"><div class="rp-title">Fibula model</div><div class="rp-sub">Align the donor fibula on the grid</div></div>
+        <div class="rp-scroll">
+          <div class="note">Preview of the donor fibula on the reference grid, with its development axis in <b>yellow</b> (the computed mean-cylinder axis, no handles) and the <b>red</b> safety-margin planes at the shaft ends. No cuts or guides here &mdash; you set those in the next steps. A first look, you come back to the fibula when placing the guides.</div>
+          <div id="fmodelStat" class="note" style="display:none;margin-top:8px">Load a donor fibula first (<b>Open fibula</b>, top bar), then it appears here.</div>
+        </div>
+        <div class="rp-foot"><div class="rp-nav">
+          <button class="btn-back" onclick="go(5)">&#8592; Back</button>
+          <button class="btn-confirm" onclick="go(6)">Next &#8594;</button>
+        </div></div>
+      </div>
+
       <!-- pane: fibula guides (guides + one maniglione per segment, on the fibula) -->
       <div class="rp-pane" id="rpFibGuide">
         <div class="rp-hd"><div class="rp-title">Fibula guides</div><div class="rp-sub">Designed mounted on the mandible &middot; transferred to the fibula next</div></div>
@@ -706,7 +720,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           </div>
         </div>
         <div class="rp-foot"><div class="rp-nav">
-          <button class="btn-back" onclick="go(5)">&#8592; Back</button>
+          <button class="btn-back" onclick="go(12)">&#8592; Back</button>
           <button class="btn-confirm" onclick="go(8)">Next &#8594;</button>
         </div></div>
       </div>
@@ -1715,7 +1729,11 @@ function ensureOrientGrid(){ if(orientGrid||!group)return;
   orientGrid.add(mk(new THREE.Euler(Math.PI/2,0,0)));       // XY  (front) — rotate 90° about X
   orientGrid.add(mk(new THREE.Euler(0,0,Math.PI/2)));       // YZ  (side)  — rotate 90° about Z
   group.add(orientGrid); }
-function updateOrientGrid(){ ensureOrientGrid(); if(orientGrid)orientGrid.visible=(curP===1); invalidate(); }
+function updateOrientGrid(){ ensureOrientGrid(); if(orientGrid){
+    if(curP===1){ orientGrid.position.set(0,0,0); orientGrid.visible=true; }                       // mandible Orient: grid at the origin
+    else if(curP===FMODEL && fibulaMesh){ const b=new THREE.Box3().setFromObject(fibulaMesh); const c=new THREE.Vector3(); b.getCenter(c); orientGrid.position.copy(c); orientGrid.visible=true; }   // Fibula model: grid centred on the donor fibula
+    else orientGrid.visible=false;
+  } invalidate(); }
 // ── corner orientation gizmo: smooth arrows in a fixed bottom-left overlay ────
 function makeArrow(dir,color){
   // smooth shaft (cylinder) + smooth head (cone, 28 radial segments) along +Y, then aim at dir
@@ -6044,9 +6062,9 @@ let trimSolid={L:null,R:null};   // the DEBUG extruded-silhouette solids (mandib
 // top-left overlay ELEMENTS: every scene part with per-item show + opacity. base() = the per-step visibility
 // go() would use (so the toggle just AND-s onto it — ON restores, OFF hides); objs() = the meshes it controls.
 const OV_ITEMS=[
-  {k:'bone',  label:'Mandible',     chip:'#c9d4e3', base:()=>(curP!==DONOR)&&$('ct-bone').classList.contains('on'), objs:()=>boneMesh?[boneMesh]:[]},   // visible in EVERY non-fibula step, incl. Orient (step 1)
+  {k:'bone',  label:'Mandible',     chip:'#c9d4e3', base:()=>(curP!==DONOR)&&(curP!==FMODEL)&&$('ct-bone').classList.contains('on'), objs:()=>boneMesh?[boneMesh]:[]},   // visible in EVERY non-fibula step, incl. Orient (step 1)
   {k:'skull', label:'Skull',        chip:'#e2e6ee', base:()=>(curP===SEG)&&!!window._skullMesh, objs:()=>window._skullMesh?[window._skullMesh]:[]},   // translucent context, controllable on the Segmentation step
-  {k:'canal', label:'Nerve canal',  chip:'#ffdc28', base:()=>(curP!==DONOR)&&!!window._canalMesh, objs:()=>window._canalMesh?[window._canalMesh]:[]},   // rides the mandible (useful to avoid the nerve when planning)
+  {k:'canal', label:'Nerve canal',  chip:'#ffdc28', base:()=>(curP!==DONOR)&&(curP!==FMODEL)&&!!window._canalMesh, objs:()=>window._canalMesh?[window._canalMesh]:[]},   // rides the mandible (useful to avoid the nerve when planning)
   {k:'resect',label:'Resect part',  chip:'#d98a7a', base:()=>(curP===SEGMENTS||curP===FIBGUIDE||curP===RECON), objs:()=>[resectMesh].concat(resectExtra||[]).filter(Boolean)},
   {k:'gL',    label:'Guide L',      chip:'#6aa3ff', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.L?[guide.L]:[]},
   {k:'gR',    label:'Guide R',      chip:'#4585e0', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.R?[guide.R]:[]},
@@ -6542,12 +6560,13 @@ function ingestModel(positions,name){
 // ─────────────────────────────────────────────────────────────────────────────
 // navigation
 // ─────────────────────────────────────────────────────────────────────────────
-const NSTEP=12;  // 11 Segmentation (shown first) · 0 Model·1 Orient·2 Planes·3 M.guides·4 Connector·5 Segments·6 F.guides·7 Donor·8 Reconstruction·9 Check·10 Export
-const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpRecon','rp4','rp5','rpSeg'];
-const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export','Segmentation'];
+const NSTEP=13;  // 11 Segmentation (shown first) · 0 Model·1 Orient·2 Planes·3 M.guides·4 Connector·5 Segments·6 F.guides·7 Donor·8 Reconstruction·9 Check·10 Export · 12 Fibula model
+const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpRecon','rp4','rp5','rpSeg','rpFModel'];
+const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export','Segmentation','Fibula model'];
 const MGUIDE=3, CONN=4, SEGMENTS=5, FIBGUIDE=6, DONOR=7, RECON=8;   // step indices — REORDERED: guides → connector → segments → fibula guides (was segments → guides → connector)
 const SEG=11;                                 // segmentation section, added last internally so no existing index shifts
-const VORDER=[11,0,1,2,3,4,5,6,8,7,9,10];     // visual/tab order: Segment first, then Model..Export; Reconstruction(8) BEFORE Donor fibula(7) so recon rotation precedes the donor guides
+const FMODEL=12;                              // fibula "Model" preview (fibula + grid + yellow axis + red margins), added last so no existing index shifts
+const VORDER=[11,0,1,2,3,4,5,12,6,8,7,9,10];  // visual/tab order: Segment first, then Model..Export; Fibula model(12) BEFORE F.guides(6); Reconstruction(8) BEFORE Donor fibula(7)
 // SINGLE SOURCE OF TRUTH for connector visibility: once generated it must be visible in EVERY step from the
 // mandible guides on, EXCEPT the segments step (where it would sit on top of the segment editing). It used to be
 // an ad-hoc `(curP===MGUIDE||curP===CONN||curP===FIBGUIDE)` allow-list duplicated in three writers that fought
@@ -6592,7 +6611,7 @@ function go(idx){
   $('ovStep').textContent=STEP_INFO[idx];
   // ── per-step visibility ─────────────────────────────────────────────────────
   const seg=(idx===SEGMENTS), mg=(idx===MGUIDE), conn=(idx===CONN), fibG=(idx===FIBGUIDE), don=(idx===DONOR), recon=(idx===RECON);
-  const fibEnv=don;                    // ONLY the Donor step is the fibula environment (down at y≈-360)
+  const fibEnv=don||(idx===FMODEL);    // fibula-only environments (down at y≈-360): the Donor step AND the Fibula-model preview → hide the mandible/teeth/planes
   if(boneMesh)boneMesh.visible=(!fibEnv)&&$('ct-bone').classList.contains('on');
   if(teethMesh)teethMesh.visible=(!fibEnv)&&(P.teeth.show!==false);   // teeth reference: rides the mandible; hidden in the fibula-only Donor env
   planes.forEach(pl=>{
@@ -6607,8 +6626,9 @@ function go(idx){
   fibMeshes.forEach(m=>m.visible=(seg||fibG)); fibMandPieces.forEach(m=>m.visible=recon&&!!fibulaMesh);
   fibMarkers.forEach(m=>m.visible=seg); fibMandLabels.forEach(m=>m.visible=(seg||fibG||recon));
   // donor fibula environment = the Donor step (7); fibula guides built ON the fibula there
-  if(fibulaMesh)fibulaMesh.visible=don; if(fibAxisLine)fibAxisLine.visible=don;
-  fibXferMeshes.forEach(m=>m.visible=don); fibMarginMeshes.forEach(m=>m.visible=don); fibLabels.forEach(m=>m.visible=don);
+  const fmodel=(idx===FMODEL);
+  if(fibulaMesh)fibulaMesh.visible=don||fmodel; if(fibAxisLine)fibAxisLine.visible=don||fmodel;
+  fibXferMeshes.forEach(m=>m.visible=don); fibMarginMeshes.forEach(m=>m.visible=don||fmodel); fibLabels.forEach(m=>m.visible=don);
   fibDonorCyl.forEach(m=>m.visible=don);
   fibCutPlanes.forEach(m=>m.visible=don); fibGuideMeshes.forEach(m=>m.visible=don); fibHandles.forEach(m=>m.visible=don);
   asmMeshes.forEach(m=>m.visible=fibG);   // fibula guides mounted ON the mandible (F.guides design environment)
@@ -6640,6 +6660,16 @@ function go(idx){
   if(mg)updateManipHL();
   ['L','R'].forEach(s=>{ if(trimSolid[s])trimSolid[s].visible=(idx===MGUIDE||idx===CONN); });   // item 7: the mandible-guide trim solids belong to M.guides/Connector — hide them in the fibula steps
   if(recon){ if(fibulaMesh)buildFibulaTransfer(); if(resectMesh)setMeshOpacity(resectMesh,P.reconResectOpacity); refreshRecon(); autoCenter(); }
+  if(idx===FMODEL){                    // Fibula model preview: donor fibula + grid + yellow axis + red margins, NO segments/guides
+    if(fibulaMesh){ buildFibulaTransfer();                       // reuse: builds the axis + margins (segments built then hidden below)
+      fibulaMesh.visible=true; setMeshOpacity(fibulaMesh,0.55);  // semi-transparent so the yellow development axis shows THROUGH the shaft
+      if(fibAxisLine&&fibAxisLine.material){ fibAxisLine.material.depthTest=false; fibAxisLine.renderOrder=5; }   // draw the axis on top so it is always clearly visible
+      if(fibAxisLine)fibAxisLine.visible=true; fibMarginMeshes.forEach(m=>m.visible=true);
+      fibXferMeshes.forEach(m=>m.visible=false); fibDonorCyl.forEach(m=>m.visible=false); fibLabels.forEach(m=>m.visible=false);
+      fibGuideMeshes.forEach(m=>m.visible=false); fibCutPlanes.forEach(m=>m.visible=false); fibHandles.forEach(m=>m.visible=false);
+      fitObject(fibulaMesh); }
+    if($('fmodelStat'))$('fmodelStat').style.display=fibulaMesh?'none':'block';
+  }
   if(idx===9){ refreshChecks(); }
   if(idx===10){ refreshExport(); }
   if($('fguideDonorBox'))$('fguideDonorBox').style.display=(idx===FIBGUIDE && !fibulaMesh)?'flex':'none';   // load-fibula prompt in F.guides
