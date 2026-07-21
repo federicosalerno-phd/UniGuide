@@ -258,7 +258,6 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
     <div class="tab locked" id="tab3" onclick="go(3)"><div class="tn" id="tn3">4</div><span>M. guides</span></div>
     <div class="tab locked" id="tab4" onclick="go(4)"><div class="tn" id="tn4">5</div><span>Connector</span></div>
     <div class="tab locked" id="tab5" onclick="go(5)"><div class="tn" id="tn5">6</div><span>Segments</span></div>
-    <div class="tab locked" id="tab12" onclick="go(12)"><div class="tn" id="tn12">8</div><span>F. model</span></div>
     <div class="tab locked" id="tab6" onclick="go(6)"><div class="tn" id="tn6">7</div><span>F. guides</span></div>
     <div class="tab locked" id="tab8" onclick="go(8)"><div class="tn" id="tn8">9</div><span>Reconstr.</span></div>
     <div class="tab locked" id="tab7" onclick="go(7)"><div class="tn" id="tn7">10</div><span>Fibula</span></div>
@@ -436,6 +435,9 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         <div class="rp-hd"><div class="rp-title">Orient model</div><div class="rp-sub">Rotate the mesh into a working view</div></div>
         <div class="rp-scroll">
           <div class="note">Rotate the model's local reference frame with the angle sliders (or type a value). The corner gizmo (<b style="color:#ff7676">X</b> &middot; <b style="color:#5bd96a">Y</b> &middot; <b style="color:#5599ff">Z</b>, bottom-left) turns with it. Drag in the viewer orbits the camera; scroll to zoom.</div>
+          <div class="sec-lbl">Subject</div>
+          <div style="display:flex;gap:8px;margin-bottom:4px"><button id="oriSubjMand" class="btn-outline" style="flex:1" onclick="setOriSubj('mand')">Mandible</button><button id="oriSubjFib" class="btn-outline" style="flex:1" onclick="setOriSubj('fib')">Fibula</button></div>
+          <div style="color:var(--t2);font-size:11px;opacity:.7;margin-bottom:6px">Orient the mandible or the donor fibula with the SAME sliders and the 1&ndash;4 view keys. The fibula is shown centred like the mandible; it never disturbs the guides on the fibula.</div>
           <div class="sec-lbl">Rotation (degrees)</div>
           <div class="note" style="padding-top:0;padding-bottom:5px">Drag the strip to rotate gently (fine), or hold the &#9650;/&#9660; arrows — they speed up the longer you hold. Type for an exact angle.</div>
           <div class="slrow"><span class="sl-l">X axis</span><div class="jog" id="jogRx" title="Drag to rotate X" onpointerdown="jogStart(event,'x')"><span class="ja">&#8644;</span><span class="jv" id="jvRx">0&deg;</span></div><span class="numwrap"><input type="number" id="nbRx" class="numin" min="0" max="360" value="0" step="0.1" onchange="onOrient('nb')"><span class="stp"><button type="button" onmousedown="holdStep('nbRx',1)" onmouseup="holdStop()" onmouseleave="holdStop()">&#9650;</button><button type="button" onmousedown="holdStep('nbRx',-1)" onmouseup="holdStop()" onmouseleave="holdStop()">&#9660;</button></span></span></div>
@@ -529,7 +531,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         </div>
         <div class="rp-foot"><div class="rp-nav">
           <button class="btn-back" onclick="go(4)">&#8592; Back</button>
-          <button class="btn-confirm" onclick="go(12)">Next &#8594;</button>
+          <button class="btn-confirm" onclick="go(6)">Next &#8594;</button>
         </div></div>
       </div>
 
@@ -670,19 +672,6 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         </div></div>
       </div>
 
-      <!-- pane 12: fibula model (preview: donor fibula + grid + axis + margins, no segments/guides) -->
-      <div class="rp-pane" id="rpFModel">
-        <div class="rp-hd"><div class="rp-title">Fibula model</div><div class="rp-sub">Align the donor fibula on the grid</div></div>
-        <div class="rp-scroll">
-          <div class="note">Preview of the donor fibula on the reference grid, with its development axis in <b>yellow</b> (the computed mean-cylinder axis, no handles) and the <b>red</b> safety-margin planes at the shaft ends. No cuts or guides here &mdash; you set those in the next steps. A first look, you come back to the fibula when placing the guides.</div>
-          <div id="fmodelStat" class="note" style="display:none;margin-top:8px">Load a donor fibula first (<b>Open fibula</b>, top bar), then it appears here.</div>
-        </div>
-        <div class="rp-foot"><div class="rp-nav">
-          <button class="btn-back" onclick="go(5)">&#8592; Back</button>
-          <button class="btn-confirm" onclick="go(6)">Next &#8594;</button>
-        </div></div>
-      </div>
-
       <!-- pane: fibula guides (guides + one maniglione per segment, on the fibula) -->
       <div class="rp-pane" id="rpFibGuide">
         <div class="rp-hd"><div class="rp-title">Fibula guides</div><div class="rp-sub">Designed mounted on the mandible &middot; transferred to the fibula next</div></div>
@@ -720,7 +709,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           </div>
         </div>
         <div class="rp-foot"><div class="rp-nav">
-          <button class="btn-back" onclick="go(12)">&#8592; Back</button>
+          <button class="btn-back" onclick="go(5)">&#8592; Back</button>
           <button class="btn-confirm" onclick="go(8)">Next &#8594;</button>
         </div></div>
       </div>
@@ -987,7 +976,9 @@ const P={
   planeSize:30, planeThick:0.5, planeOpacity:0.30,    // cutting-plane appearance (configurable)
   tumor:{sProx:null, sDist:null, depth:18}, marginL:4, marginR:4, tumorPick:null,   // tumour span (arc-length on the centreline) + auto-plane
 
-  rx:0, ry:0, rz:0,                                   // model orientation (Euler deg, XYZ)
+  rx:0, ry:0, rz:0,                                   // mandible orientation (Euler deg, XYZ)
+  oriSubj:'mand',                                     // Orient step subject: 'mand' (mandible) | 'fib' (donor fibula, shown centred like the mandible)
+  fibOri:{rx:0, ry:0, rz:0},                          // donor-fibula orientation for the Orient step (view-only, identical sliders/keys to the mandible)
   szL:'M', szR:'M', modL:'', modR:'', modFib:'',      // module: '' = parametric size, else STL filename (modFib = unified fibula guide)
   connSize:0, szLi:0, szRi:0,                         // size-library index for the connector + each mandible side
   gsel:'L',                                           // which module the position sliders affect
@@ -1193,7 +1184,10 @@ function viewAnatomical(which){
   else { dir=Y.clone().negate();                up=Z.clone(); }            // bottom: look up +Y
   if(activeNormalSide)restorePlaneIsolation();
   activeNormalSide=null; refreshPlaneOverlays();
-  orbit.tgt.copy(boneMesh?boneCenterW():new THREE.Vector3()); orbit.r=Math.max(modelRadius*2.6,80);
+  if(curP===1 && P.oriSubj==='fib' && fibOriPivot){   // fibula in the Orient step: same views, centred at the origin, framed to the long shaft
+    const sph=new THREE.Sphere(); new THREE.Box3().setFromObject(fibOriPivot).getBoundingSphere(sph);
+    orbit.tgt.copy(sph.center); orbit.r=Math.max(sph.radius*2.4,120);
+  } else { orbit.tgt.copy(boneMesh?boneCenterW():new THREE.Vector3()); orbit.r=Math.max(modelRadius*2.6,80); }
   orbit.q.setFromRotationMatrix(new THREE.Matrix4().lookAt(dir,new THREE.Vector3(0,0,0),up));
   useOrtho=true; activeAnatomical=which;
   const map={front:'ct-vaF',side:'ct-vaS',top:'ct-vaT',bottom:'ct-vaB'};
@@ -1729,11 +1723,7 @@ function ensureOrientGrid(){ if(orientGrid||!group)return;
   orientGrid.add(mk(new THREE.Euler(Math.PI/2,0,0)));       // XY  (front) — rotate 90° about X
   orientGrid.add(mk(new THREE.Euler(0,0,Math.PI/2)));       // YZ  (side)  — rotate 90° about Z
   group.add(orientGrid); }
-function updateOrientGrid(){ ensureOrientGrid(); if(orientGrid){
-    if(curP===1){ orientGrid.position.set(0,0,0); orientGrid.visible=true; }                       // mandible Orient: grid at the origin
-    else if(curP===FMODEL && fibulaMesh){ const b=new THREE.Box3().setFromObject(fibulaMesh); const c=new THREE.Vector3(); b.getCenter(c); orientGrid.position.copy(c); orientGrid.visible=true; }   // Fibula model: grid centred on the donor fibula
-    else orientGrid.visible=false;
-  } invalidate(); }
+function updateOrientGrid(){ ensureOrientGrid(); if(orientGrid){ orientGrid.position.set(0,0,0); orientGrid.visible=(curP===1); } invalidate(); }   // reference grid at the origin in the Orient step (the fibula clone is centred there too)
 // ── corner orientation gizmo: smooth arrows in a fixed bottom-left overlay ────
 function makeArrow(dir,color){
   // smooth shaft (cylinder) + smooth head (cone, 28 radial segments) along +Y, then aim at dir
@@ -1783,13 +1773,18 @@ function renderGizmo(){
 }
 
 // ── model orientation: explicit Euler angles (deg) about the model's X/Y/Z ────
+// The Orient sliders/keys drive EITHER the mandible (P.rx/ry/rz on modelPivot) OR the donor fibula
+// (P.fibOri on fibOriPivot). Identical controls; the fibula is shown as a CENTRED CLONE at the world
+// origin (same place as the mandible) so the sliders and the 1-4 anatomical view keys behave the same.
+function _oriState(){ return P.oriSubj==='fib' ? P.fibOri : P; }
 function applyOrient(){
-  if(!modelPivot)return;
-  modelPivot.quaternion.setFromEuler(new THREE.Euler(P.rx*D2R,P.ry*D2R,P.rz*D2R,'XYZ'));
+  const S=_oriState(), q=new THREE.Euler(S.rx*D2R,S.ry*D2R,S.rz*D2R,'XYZ');
+  if(P.oriSubj==='fib'){ if(fibOriPivot)fibOriPivot.quaternion.setFromEuler(q); }
+  else if(modelPivot){ modelPivot.quaternion.setFromEuler(q); }
   invalidate();
 }
-function syncOrientUI(){
-  ['x','y','z'].forEach(a=>{ const v=Math.round(P['r'+a]*10)/10;
+function syncOrientUI(){ const S=_oriState();
+  ['x','y','z'].forEach(a=>{ const v=Math.round(S['r'+a]*10)/10;
     const nb=$('nbR'+a), jv=$('jvR'+a); if(nb&&document.activeElement!==nb)nb.value=v; if(jv)jv.textContent=v.toFixed(1)+'°'; });
 }
 // low-gain jog: drag the strip to rotate gently (≈0.28°/px → no twitch)
@@ -1800,20 +1795,57 @@ function jogStart(e,axis){
   _jog={axis:axis,x:e.clientX};
   window.addEventListener('pointermove',jogMove); window.addEventListener('pointerup',jogEnd);
 }
-function jogMove(e){ if(!_jog)return; const dx=e.clientX-_jog.x; _jog.x=e.clientX;
-  let v=P['r'+_jog.axis]+dx*JOG_GAIN; v=((v%360)+360)%360; P['r'+_jog.axis]=v;
+function jogMove(e){ if(!_jog)return; const dx=e.clientX-_jog.x; _jog.x=e.clientX; const S=_oriState();
+  let v=S['r'+_jog.axis]+dx*JOG_GAIN; v=((v%360)+360)%360; S['r'+_jog.axis]=v;
   applyOrient(); syncOrientUI(); }
 function jogEnd(){ if(!_jog)return; const el=$('jogR'+_jog.axis); if(el)el.classList.remove('drag'); _jog=null;
-  window.removeEventListener('pointermove',jogMove); window.removeEventListener('pointerup',jogEnd); clearPicksOnReorient(); }
-function onOrient(src){
+  window.removeEventListener('pointermove',jogMove); window.removeEventListener('pointerup',jogEnd); if(P.oriSubj!=='fib')clearPicksOnReorient(); }
+function onOrient(src){ const S=_oriState();
   ['x','y','z'].forEach(a=>{
-    const nb=$('nbR'+a); let v=nb?parseFloat(nb.value):P['r'+a];
+    const nb=$('nbR'+a); let v=nb?parseFloat(nb.value):S['r'+a];
     if(isNaN(v))v=0; v=((v%360)+360)%360;            // wrap to 0..360
-    P['r'+a]=v;
+    S['r'+a]=v;
   });
-  applyOrient(); syncOrientUI(); clearPicksOnReorient();
+  applyOrient(); syncOrientUI(); if(P.oriSubj!=='fib')clearPicksOnReorient(); }
+function resetModel(){ const S=_oriState(); S.rx=S.ry=S.rz=0; applyOrient(); syncOrientUI(); if(P.oriSubj!=='fib')clearPicksOnReorient(); }
+// ── Orient subject = donor fibula: a CENTRED CLONE (never touches the real fibula the transfer uses) ──
+let fibOriPivot=null;
+function ensureFibOriPivot(){ if(fibOriPivot||!group)return; fibOriPivot=new THREE.Group(); fibOriPivot.name='fibOriPivot'; fibOriPivot.visible=false; group.add(fibOriPivot); }
+function clearFibOriView(){ if(fibOriPivot){ for(let i=fibOriPivot.children.length-1;i>=0;i--){ disposeMesh(fibOriPivot.children[i]); } } }
+function buildFibOriView(){                          // clone the fibula + its axis + margins, centred at the origin
+  ensureFibOriPivot(); clearFibOriView();
+  if(!fibulaMesh||!fibulaAxis){ return false; }
+  const box=new THREE.Box3().setFromObject(fibulaMesh), c=new THREE.Vector3(); box.getCenter(c);
+  const off=c.clone().negate();                      // translate everything so the fibula CENTRE sits at the origin
+  const g=fibulaMesh.geometry.clone(); g.translate(off.x,off.y,off.z);
+  const fm=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0xb9c4d0,roughness:0.6,metalness:0,side:THREE.DoubleSide,transparent:true,opacity:0.9}));
+  fm.name='fibOriBone'; fibOriPivot.add(fm);
+  const o=fibulaAxis.o.clone().add(off), d=fibulaAxis.d.clone().normalize(), len=fibulaAxis.len;
+  const lg=new THREE.BufferGeometry().setFromPoints([o.clone(), o.clone().addScaledVector(d,len)]);
+  const axl=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xffcf5a,depthTest:false})); axl.renderOrder=5; fibOriPivot.add(axl);
+  const sw=fibulaAxis.width||10, half=Math.max(sw*2.2,12);
+  [fibulaAxis.safeMin,fibulaAxis.safeMax].forEach(s=>{ const bg=new THREE.BoxGeometry(half*2,half*2,Math.max(sw*0.12,0.6));
+    const mp=new THREE.Mesh(bg,new THREE.MeshStandardMaterial({color:0xff4d4d,transparent:true,opacity:0.30,side:THREE.DoubleSide,depthWrite:false,roughness:1}));
+    mp.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),d); mp.position.copy(o).addScaledVector(d,s);
+    mp.add(new THREE.LineSegments(new THREE.EdgesGeometry(bg),new THREE.LineBasicMaterial({color:0xff4d4d}))); fibOriPivot.add(mp); });
+  return true;
 }
-function resetModel(){ P.rx=P.ry=P.rz=0; applyOrient(); syncOrientUI(); clearPicksOnReorient(); }
+function setOriSubj(subj){
+  if(subj==='fib' && !fibulaMesh){ toast('Load a donor fibula first (Open fibula).'); return; }
+  P.oriSubj=subj;
+  ['oriSubjMand','oriSubjFib'].forEach((id,i)=>{ const b=$(id); if(b)_segActive(b, (i===0)===(subj==='mand')); });
+  const isFib=(subj==='fib');
+  if(isFib){ buildFibOriView(); }
+  applyOriSubjVisibility();
+  applyOrient(); syncOrientUI(); invalidate();
+}
+// show only the active subject in the Orient step (mandible OR the centred fibula clone)
+function applyOriSubjVisibility(){
+  const inOri=(curP===1), isFib=(P.oriSubj==='fib');
+  ensureFibOriPivot();
+  if(fibOriPivot)fibOriPivot.visible=inOri&&isFib;
+  if(inOri&&isFib){ if(boneMesh)boneMesh.visible=false; if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(teethMesh)teethMesh.visible=false; }
+}
 // changing orientation invalidates any points already picked on the old pose
 function clearPicksOnReorient(){
   { P.tumor.sProx=null; P.tumor.sDist=null; P.tumorPick=null; mandCL=null; rebuildTumor(); if($('tumorCtl'))$('tumorCtl').style.display='none'; }   // re-orienting changes the pose → drop the fitted axis
@@ -6062,9 +6094,9 @@ let trimSolid={L:null,R:null};   // the DEBUG extruded-silhouette solids (mandib
 // top-left overlay ELEMENTS: every scene part with per-item show + opacity. base() = the per-step visibility
 // go() would use (so the toggle just AND-s onto it — ON restores, OFF hides); objs() = the meshes it controls.
 const OV_ITEMS=[
-  {k:'bone',  label:'Mandible',     chip:'#c9d4e3', base:()=>(curP!==DONOR)&&(curP!==FMODEL)&&$('ct-bone').classList.contains('on'), objs:()=>boneMesh?[boneMesh]:[]},   // visible in EVERY non-fibula step, incl. Orient (step 1)
+  {k:'bone',  label:'Mandible',     chip:'#c9d4e3', base:()=>(curP!==DONOR)&&!(curP===1&&P.oriSubj==='fib')&&$('ct-bone').classList.contains('on'), objs:()=>boneMesh?[boneMesh]:[]},   // hidden in the Donor step and while orienting the fibula
   {k:'skull', label:'Skull',        chip:'#e2e6ee', base:()=>(curP===SEG)&&!!window._skullMesh, objs:()=>window._skullMesh?[window._skullMesh]:[]},   // translucent context, controllable on the Segmentation step
-  {k:'canal', label:'Nerve canal',  chip:'#ffdc28', base:()=>(curP!==DONOR)&&(curP!==FMODEL)&&!!window._canalMesh, objs:()=>window._canalMesh?[window._canalMesh]:[]},   // rides the mandible (useful to avoid the nerve when planning)
+  {k:'canal', label:'Nerve canal',  chip:'#ffdc28', base:()=>(curP!==DONOR)&&!(curP===1&&P.oriSubj==='fib')&&!!window._canalMesh, objs:()=>window._canalMesh?[window._canalMesh]:[]},   // rides the mandible (useful to avoid the nerve when planning)
   {k:'resect',label:'Resect part',  chip:'#d98a7a', base:()=>(curP===SEGMENTS||curP===FIBGUIDE||curP===RECON), objs:()=>[resectMesh].concat(resectExtra||[]).filter(Boolean)},
   {k:'gL',    label:'Guide L',      chip:'#6aa3ff', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.L?[guide.L]:[]},
   {k:'gR',    label:'Guide R',      chip:'#4585e0', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.R?[guide.R]:[]},
@@ -6560,13 +6592,12 @@ function ingestModel(positions,name){
 // ─────────────────────────────────────────────────────────────────────────────
 // navigation
 // ─────────────────────────────────────────────────────────────────────────────
-const NSTEP=13;  // 11 Segmentation (shown first) · 0 Model·1 Orient·2 Planes·3 M.guides·4 Connector·5 Segments·6 F.guides·7 Donor·8 Reconstruction·9 Check·10 Export · 12 Fibula model
-const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpRecon','rp4','rp5','rpSeg','rpFModel'];
-const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export','Segmentation','Fibula model'];
+const NSTEP=12;  // 11 Segmentation (shown first) · 0 Model·1 Orient·2 Planes·3 M.guides·4 Connector·5 Segments·6 F.guides·7 Donor·8 Reconstruction·9 Check·10 Export
+const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpRecon','rp4','rp5','rpSeg'];
+const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export','Segmentation'];
 const MGUIDE=3, CONN=4, SEGMENTS=5, FIBGUIDE=6, DONOR=7, RECON=8;   // step indices — REORDERED: guides → connector → segments → fibula guides (was segments → guides → connector)
 const SEG=11;                                 // segmentation section, added last internally so no existing index shifts
-const FMODEL=12;                              // fibula "Model" preview (fibula + grid + yellow axis + red margins), added last so no existing index shifts
-const VORDER=[11,0,1,2,3,4,5,12,6,8,7,9,10];  // visual/tab order: Segment first, then Model..Export; Fibula model(12) BEFORE F.guides(6); Reconstruction(8) BEFORE Donor fibula(7)
+const VORDER=[11,0,1,2,3,4,5,6,8,7,9,10];     // visual/tab order: Segment first, then Model..Export; Reconstruction(8) BEFORE Donor fibula(7)
 // SINGLE SOURCE OF TRUTH for connector visibility: once generated it must be visible in EVERY step from the
 // mandible guides on, EXCEPT the segments step (where it would sit on top of the segment editing). It used to be
 // an ad-hoc `(curP===MGUIDE||curP===CONN||curP===FIBGUIDE)` allow-list duplicated in three writers that fought
@@ -6611,7 +6642,7 @@ function go(idx){
   $('ovStep').textContent=STEP_INFO[idx];
   // ── per-step visibility ─────────────────────────────────────────────────────
   const seg=(idx===SEGMENTS), mg=(idx===MGUIDE), conn=(idx===CONN), fibG=(idx===FIBGUIDE), don=(idx===DONOR), recon=(idx===RECON);
-  const fibEnv=don||(idx===FMODEL);    // fibula-only environments (down at y≈-360): the Donor step AND the Fibula-model preview → hide the mandible/teeth/planes
+  const fibEnv=don;                    // ONLY the Donor step is the fibula environment (down at y≈-360)
   if(boneMesh)boneMesh.visible=(!fibEnv)&&$('ct-bone').classList.contains('on');
   if(teethMesh)teethMesh.visible=(!fibEnv)&&(P.teeth.show!==false);   // teeth reference: rides the mandible; hidden in the fibula-only Donor env
   planes.forEach(pl=>{
@@ -6626,9 +6657,8 @@ function go(idx){
   fibMeshes.forEach(m=>m.visible=(seg||fibG)); fibMandPieces.forEach(m=>m.visible=recon&&!!fibulaMesh);
   fibMarkers.forEach(m=>m.visible=seg); fibMandLabels.forEach(m=>m.visible=(seg||fibG||recon));
   // donor fibula environment = the Donor step (7); fibula guides built ON the fibula there
-  const fmodel=(idx===FMODEL);
-  if(fibulaMesh)fibulaMesh.visible=don||fmodel; if(fibAxisLine)fibAxisLine.visible=don||fmodel;
-  fibXferMeshes.forEach(m=>m.visible=don); fibMarginMeshes.forEach(m=>m.visible=don||fmodel); fibLabels.forEach(m=>m.visible=don);
+  if(fibulaMesh)fibulaMesh.visible=don; if(fibAxisLine)fibAxisLine.visible=don;
+  fibXferMeshes.forEach(m=>m.visible=don); fibMarginMeshes.forEach(m=>m.visible=don); fibLabels.forEach(m=>m.visible=don);
   fibDonorCyl.forEach(m=>m.visible=don);
   fibCutPlanes.forEach(m=>m.visible=don); fibGuideMeshes.forEach(m=>m.visible=don); fibHandles.forEach(m=>m.visible=don);
   asmMeshes.forEach(m=>m.visible=fibG);   // fibula guides mounted ON the mandible (F.guides design environment)
@@ -6637,7 +6667,11 @@ function go(idx){
   const gl=$('gl'); if(gl) gl.style.cursor=((idx===2||idx===SEGMENTS)?'crosshair':'grab');
 
   // per-step viewer emphasis
-  if(idx===1){ $('cthint').textContent='Set X / Y / Z angles to rotate the model · drag orbits camera'; syncOrientUI(); if(typeof renderTeethPanel==='function')renderTeethPanel(); }
+  if(idx===1){ $('cthint').textContent='Set X / Y / Z angles to rotate the '+(P.oriSubj==='fib'?'fibula':'mandible')+' · drag orbits camera';
+    if(P.oriSubj==='fib' && !fibulaMesh)P.oriSubj='mand';                                  // no donor fibula → fall back to the mandible
+    ['oriSubjMand','oriSubjFib'].forEach((id,i)=>{ const b=$(id); if(b)_segActive(b, (i===0)===(P.oriSubj==='mand')); });
+    if(P.oriSubj==='fib')buildFibOriView();
+    applyOrient(); syncOrientUI(); if(typeof renderTeethPanel==='function')renderTeethPanel(); }
   else if(idx===2){ $('cthint').textContent='Click model to place points · drag rotate · scroll zoom'; }
   else if(idx===SEGMENTS){ $('cthint').textContent='Click a cutting plane to move that segment node · drag rotate'; }
   else if(fibG){ $('cthint').textContent='Fibula guides on the mandible · S selects · R + yellow knob rotates · drag orbits'; }
@@ -6660,16 +6694,6 @@ function go(idx){
   if(mg)updateManipHL();
   ['L','R'].forEach(s=>{ if(trimSolid[s])trimSolid[s].visible=(idx===MGUIDE||idx===CONN); });   // item 7: the mandible-guide trim solids belong to M.guides/Connector — hide them in the fibula steps
   if(recon){ if(fibulaMesh)buildFibulaTransfer(); if(resectMesh)setMeshOpacity(resectMesh,P.reconResectOpacity); refreshRecon(); autoCenter(); }
-  if(idx===FMODEL){                    // Fibula model preview: donor fibula + grid + yellow axis + red margins, NO segments/guides
-    if(fibulaMesh){ buildFibulaTransfer();                       // reuse: builds the axis + margins (segments built then hidden below)
-      fibulaMesh.visible=true; setMeshOpacity(fibulaMesh,0.55);  // semi-transparent so the yellow development axis shows THROUGH the shaft
-      if(fibAxisLine&&fibAxisLine.material){ fibAxisLine.material.depthTest=false; fibAxisLine.renderOrder=5; }   // draw the axis on top so it is always clearly visible
-      if(fibAxisLine)fibAxisLine.visible=true; fibMarginMeshes.forEach(m=>m.visible=true);
-      fibXferMeshes.forEach(m=>m.visible=false); fibDonorCyl.forEach(m=>m.visible=false); fibLabels.forEach(m=>m.visible=false);
-      fibGuideMeshes.forEach(m=>m.visible=false); fibCutPlanes.forEach(m=>m.visible=false); fibHandles.forEach(m=>m.visible=false);
-      fitObject(fibulaMesh); }
-    if($('fmodelStat'))$('fmodelStat').style.display=fibulaMesh?'none':'block';
-  }
   if(idx===9){ refreshChecks(); }
   if(idx===10){ refreshExport(); }
   if($('fguideDonorBox'))$('fguideDonorBox').style.display=(idx===FIBGUIDE && !fibulaMesh)?'flex':'none';   // load-fibula prompt in F.guides
@@ -6677,6 +6701,7 @@ function go(idx){
   renderPlaneOverlay();
   if($('planeSizeBox'))$('planeSizeBox').style.display=(idx>=2 && idx<=RECON && planes.length) ? 'block' : 'none';   // item 2: floating plane-size slider wherever the planes show
   if(idx===2||mg||conn){ refreshPlaneOverlays(); } else { clearPlaneBoneLines(); clearPlaneNormals(); }   // plane↔mandible outlines + normal arrows in the planning/guide steps
+  applyOriSubjVisibility();   // LAST: hide the fibula orient-clone outside Orient, and hide the mandible while orienting the fibula (wins over applyOverlayState above)
   updateLegend(); if(showViewer){resize(); }
   if(!manipSection()&&typeof removeDial==='function')removeDial();   // no stray rotation dial outside the manip steps
   invalidate();
