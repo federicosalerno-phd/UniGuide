@@ -4490,7 +4490,7 @@ function _sliceReveal(it){                    // add ONE slice plane at its worl
 function _sliceDrainTick(){                    // reveal ONE queued slice at a time, spread over the wait
   if(!_sliceGroup){ _sliceDrain=0; return; }
   if(_sliceQ.length) _sliceReveal(_sliceQ.shift());
-  const iv=Math.max(90,Math.min(650,4600/Math.max(1,_sliceQ.length)));     // long queue -> faster, short -> slower (fluid, continuous, keeps up with compute)
+  const iv=Math.max(45,Math.min(600,4600/Math.max(1,_sliceQ.length)));     // long queue -> faster, short -> slower (fluid, continuous; dense intermediate slices keep it smooth)
   _sliceDrain=setTimeout(_sliceDrainTick, iv);
 }
 function segSlice(cornersStr,b64){

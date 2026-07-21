@@ -274,7 +274,7 @@ def run_moose(ct_nifti, model, work_dir):
     return hits[-1]
 
 
-def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=3.0, max_slices=90, target_px=480):
+def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=220, target_px=480):
     """Post-segmentation SLICE reveal for a model that gives NO per-tile hook (MOOSE, subprocess):
     sweep the CT along its long axis and emit SLICE events (faint CT haze + the bones painted red),
     exactly the format the head reveal uses, so the leg forms slice by slice in 3D too. The backend
@@ -303,10 +303,11 @@ def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=3.0, max_slices=
 
     for zi in zs:
         gi = (np.clip((ct[zi] + 150.0) / 1500.0, 0, 1) * 255).astype(np.uint8)   # bone-ish window
+        gih = (gi.astype(np.float32) * 0.4)                                       # DIM the CT so stacked slices never fog
         rgba = np.zeros((ny, nx, 4), np.uint8)
-        rgba[..., 0] = gi; rgba[..., 1] = gi; rgba[..., 2] = gi
-        rgba[..., 3] = np.where(gi > 60, 45, 0).astype(np.uint8)                  # faint haze, slices stack see-through
-        rgba[bone[zi]] = (255, 74, 42, 255)                                       # bone: opaque red
+        rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool, dim context
+        rgba[..., 3] = np.where(gi > 80, 14, 0).astype(np.uint8)                  # very faint haze → crisp, not "sfumata"
+        rgba[bone[zi]] = (255, 176, 82, 255)                                      # warm amber bone, opaque → pops, reads clean while it forms
         im = Image.fromarray(rgba, "RGBA")
         if im.width > target_px:
             im = im.resize((target_px, max(1, int(target_px * im.height / im.width))))
@@ -508,7 +509,7 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
     sp_w = np.array([float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1])])  # sitk (x,y,z)
     origin = np.array(crop_img.GetOrigin(), float)
     D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
-    zstep = max(1, int(round(1.8 / float(cm.spacing[1]))))          # a CT slice every ~1.8 mm of working Z (denser = fluid sweep)
+    zstep = max(1, int(round(0.9 / float(cm.spacing[1]))))          # a CT slice every ~0.9 mm of working Z (dense intermediate slices = continuous, gradual sweep)
     state = {"levels": None, "emitted": set(), "count": 0}
 
     def _corner(cx, cy, cz):                                        # one (X',Y',Z') voxel -> world mm
@@ -523,10 +524,11 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             mand = ((seg == 2) & (npred[:, zc, :] > 0.5)).to("cpu").numpy()
             gi = (np.clip((ct + 1.0) / 4.0, 0, 1) * 255).astype(np.uint8)        # fixed window on the z-scored CT
             ny, nx = ct.shape
+            gih = (gi.astype(np.float32) * 0.4)                                   # DIM the CT so stacked slices never fog
             rgba = np.zeros((ny, nx, 4), np.uint8)
-            rgba[..., 0] = gi; rgba[..., 1] = gi; rgba[..., 2] = gi
-            rgba[..., 3] = np.where(gi > 70, 42, 0).astype(np.uint8)             # faint CT haze so slices stack see-through
-            rgba[mand] = (255, 74, 42, 255)                                      # mandible: opaque red
+            rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool, dim context
+            rgba[..., 3] = np.where(gi > 90, 14, 0).astype(np.uint8)             # very faint CT haze → crisp, not "sfumata"
+            rgba[mand] = (255, 176, 82, 255)                                      # warm amber bone, opaque → pops, reads clean while it forms
             im = Image.fromarray(rgba, "RGBA")
             if im.width > 480:                                                   # crisp: 480 px is sharp on screen, still small over stderr
                 im = im.resize((480, max(1, int(480 * im.height / im.width))))
@@ -549,7 +551,7 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             nz = int(logits.shape[2])
             state["levels"] = list(range(zstep // 2, nz, zstep))     # the Z levels we show, evenly spaced
         for zc in state["levels"]:                                   # emit any level now finalized, not yet shown
-            if zc in state["emitted"] or state["count"] >= 96:
+            if zc in state["emitted"] or state["count"] >= 180:
                 continue
             if float(npred[:, zc, :].max()) > 0.5:                   # this slice has been segmented
                 state["emitted"].add(zc)
