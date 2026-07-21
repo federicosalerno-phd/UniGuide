@@ -828,9 +828,10 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
         # run: the mandible is built first and already emitted, so keep going.
         try:
             nm = name.lower()
-            if "fibula" in nm or "tibia" in nm:      # MOOSE leg bones: the terraces are TRANSVERSE steps along the
-                ps, si = (4.5, 0.6, 0.6), 6          # slice axis (array axis 0). Blur HARD along it, stay sharp in-plane,
-                                                     # minimal mesh smoothing → terraces gone, cross-section + shaft detail kept.
+            if "fibula" in nm or "tibia" in nm:      # MOOSE leg bones are wavy BOTH across and in-plane (a directional
+                ps, si = 2.5, 40                     # blur left the in-plane wobble). An ISOTROPIC blur + strong Taubin
+                                                     # matches the smooth clinical GT — the fibula has no fine detail to keep
+                                                     # (verified vs the GT STL), only its shape (curve/taper/ends), which survive.
             elif "canal" in nm or "nerve" in nm or "vessel" in nm:   # thin tubes: NO blur (it would erase them)
                 ps, si = 0.0, 8
             else:                                    # mandible / skull: gentle anti-alias, keep the detail
