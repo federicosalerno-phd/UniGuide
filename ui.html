@@ -259,8 +259,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
     <div class="tab locked" id="tab4" onclick="go(4)"><div class="tn" id="tn4">5</div><span>Connector</span></div>
     <div class="tab locked" id="tab5" onclick="go(5)"><div class="tn" id="tn5">6</div><span>Segments</span></div>
     <div class="tab locked" id="tab6" onclick="go(6)"><div class="tn" id="tn6">7</div><span>F. guides</span></div>
-    <div class="tab locked" id="tab7" onclick="go(7)"><div class="tn" id="tn7">8</div><span>Fibula</span></div>
     <div class="tab locked" id="tab8" onclick="go(8)"><div class="tn" id="tn8">9</div><span>Reconstr.</span></div>
+    <div class="tab locked" id="tab7" onclick="go(7)"><div class="tn" id="tn7">10</div><span>Fibula</span></div>
     <div class="tab locked" id="tab9" onclick="go(9)"><div class="tn" id="tn9">10</div><span>Check</span></div>
     <div class="tab locked" id="tab10" onclick="go(10)"><div class="tn" id="tn10">11</div><span>Export</span></div>
   </div>
@@ -559,8 +559,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           </div>
         </div>
         <div class="rp-foot"><div class="rp-nav">
-          <button class="btn-back" onclick="go(6)">&#8592; Back</button>
-          <button class="btn-confirm" id="btnDonorNext" onclick="go(8)">Next &#8594;</button>
+          <button class="btn-back" onclick="go(8)">&#8592; Back</button>
+          <button class="btn-confirm" id="btnDonorNext" onclick="go(9)">Next &#8594;</button>
         </div></div>
       </div>
 
@@ -664,8 +664,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           </div>
         </div>
         <div class="rp-foot"><div class="rp-nav">
-          <button class="btn-back" onclick="go(7)">&#8592; Back</button>
-          <button class="btn-confirm" onclick="go(9)">Next &#8594;</button>
+          <button class="btn-back" onclick="go(6)">&#8592; Back</button>
+          <button class="btn-confirm" onclick="go(7)">Next &#8594;</button>
         </div></div>
       </div>
 
@@ -707,7 +707,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
         </div>
         <div class="rp-foot"><div class="rp-nav">
           <button class="btn-back" onclick="go(5)">&#8592; Back</button>
-          <button class="btn-confirm" onclick="go(7)">Next &#8594;</button>
+          <button class="btn-confirm" onclick="go(8)">Next &#8594;</button>
         </div></div>
       </div>
 
@@ -748,7 +748,7 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
           <div class="note">A determinate 3-point contact removes the rocking a 4-point clamp would have; the bridge fixes both planes at once and lifts off after cutting.</div>
         </div>
         <div class="rp-foot"><div class="rp-nav">
-          <button class="btn-back" onclick="go(8)">&#8592; Back</button>
+          <button class="btn-back" onclick="go(7)">&#8592; Back</button>
           <button class="btn-confirm" onclick="go(10)">Next &#8594;</button>
         </div></div>
       </div>
@@ -6529,7 +6529,7 @@ const PANES=['rp0','rpOri','rp1','rp2','rp3','rpFib','rpFibGuide','rpDonor','rpR
 const STEP_INFO=['Model','Orient','Cutting planes','Guide modules','Connector','Mandible segments','Fibula guides','Donor fibula','Reconstruction','Fit check','Export','Segmentation'];
 const MGUIDE=3, CONN=4, SEGMENTS=5, FIBGUIDE=6, DONOR=7, RECON=8;   // step indices — REORDERED: guides → connector → segments → fibula guides (was segments → guides → connector)
 const SEG=11;                                 // segmentation section, added last internally so no existing index shifts
-const VORDER=[11,0,1,2,3,4,5,6,7,8,9,10];     // visual/tab order: Segment first, then Model..Export
+const VORDER=[11,0,1,2,3,4,5,6,8,7,9,10];     // visual/tab order: Segment first, then Model..Export; Reconstruction(8) BEFORE Donor fibula(7) so recon rotation precedes the donor guides
 // SINGLE SOURCE OF TRUTH for connector visibility: once generated it must be visible in EVERY step from the
 // mandible guides on, EXCEPT the segments step (where it would sit on top of the segment editing). It used to be
 // an ad-hoc `(curP===MGUIDE||curP===CONN||curP===FIBGUIDE)` allow-list duplicated in three writers that fought
