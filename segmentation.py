@@ -568,23 +568,28 @@ def run_dental_nnunet(ct_nifti, work_dir):
         isp = np.array(fine_img.GetSpacing(), dtype=float)      # sitk (x,y,z)
         tgt = np.array(cm.spacing, dtype=float)                 # working order (y,z,x)
         n_cls = len(predictor.dataset_json.get("labels", {})) or 6
-        # SPEED: the mandible does not need the model's finest spacing (~0.31 mm); cap the
-        # working spacing so the head segments several times faster with negligible loss on the
-        # bone surface. Floor it PER AXIS at the data's own spacing so no axis is ever upsampled
-        # (a coarse through-plane axis pulled finer would blow up RAM for no added detail).
-        # cm.spacing is in working order (y,z,x) = sitk (sy,sz,sx), so reorder the sitk spacing.
-        TARGET_MAND = 0.7                                       # 0.7 mm is plenty for a cutting guide and faster
-        isp_w = isp[[1, 2, 0]]                                  # sitk (x,y,z) -> working (y,z,x)
-        work = np.maximum(tgt, np.maximum(TARGET_MAND, isp_w))
+        # SPEED vs the mandible staying in ONE piece. Coarsen the IN-PLANE axes to TARGET_MAND
+        # (the bone SURFACE does not need the model's ~0.3 mm for a cutting guide, so the head
+        # segments fast). BUT keep the THROUGH-PLANE (slice) axis at the model's NATIVE spacing:
+        # coarsening it to the slice thickness (0.6 mm here, or to 0.7) is exactly what made
+        # DentalSegmentator miss the anterior mandibular body — it could not resolve the occlusal
+        # gap between the upper and lower teeth, labelled the symphysis as skull, and the mandible
+        # came out as two disconnected rami. Keeping the slice axis native recovers a fully
+        # connected mandible at NO extra cost (BENEDETTO recall 75%->95%, still ~120 s).
+        # cm.spacing (=tgt) is working order (y,z,x); the slice axis is the COARSEST data axis.
+        TARGET_MAND = 0.7                                       # in-plane target: plenty for a cutting guide, fast
+        zc = int(np.argmax(isp))                               # slice axis in sitk order (x,y,z) = coarsest data axis
+        zc_w = [2, 0, 1][zc]                                   # sitk (x,y,z) -> working (y,z,x)
+        work = np.maximum(np.array(tgt, dtype=float), TARGET_MAND)   # coarsen every axis for speed...
+        work[zc_w] = float(tgt[zc_w])                          # ...except the slice axis, kept at the model's native spacing
         # RAM: coarsen further if the on-CPU map would not fit free memory (physical extent over
-        # the working voxel volume, times the class count, fp32).
+        # the working voxel volume, times the class count, fp32). Rare here (~1 GB, ample free RAM).
         soft_gb = float(np.prod(sh * isp) / np.prod(work)) * n_cls * 4 / 1e9
         free_gb = psutil.virtual_memory().available / 1e9
         budget = max(1.5, free_gb * 0.35)   # leave RAM for the model, the copies and the mesh
         if soft_gb > budget:
-            # coarsen to fit, but never past 0.9 mm (keep the mandible usable) and never finer than
-            # the data's own spacing on any axis (the cap must not upsample a coarse through-plane).
-            work = np.maximum(np.minimum(work * (soft_gb / budget) ** (1.0 / 3.0), 0.9), isp_w)
+            # coarsen to fit, capped at 0.9 mm; as a last resort this may coarsen the slice axis too
+            work = np.minimum(work * (soft_gb / budget) ** (1.0 / 3.0), 0.9)
             soft_gb = float(np.prod(sh * isp) / np.prod(work)) * n_cls * 4 / 1e9
             log("low RAM: %.1f GB free; coarsening to %s (map ~%.1f GB)"
                 % (free_gb, [round(x, 2) for x in work], soft_gb))
@@ -691,6 +696,18 @@ def mask_to_mesh(mask, img, smooth_iter=10):
     D = np.array(img.GetDirection(), dtype=np.float64).reshape(3, 3)
     phys = origin + (idx * sp) @ D.T
     mesh = trimesh.Trimesh(vertices=phys, faces=faces, process=True)
+    # Drop tiny disconnected shells (marching-cubes speckle at a finer working spacing) so the bone
+    # is one clean surface. Genuine multi-part anatomy (both rami of a defect mandible) is kept: the
+    # threshold is relative to the biggest shell, so only true specks fall out.
+    try:
+        parts = mesh.split(only_watertight=False)
+        if len(parts) > 1:
+            fmax = max(len(p.faces) for p in parts)
+            keep = [p for p in parts if len(p.faces) >= max(200, 0.03 * fmax)]
+            if keep:
+                mesh = trimesh.util.concatenate(keep)
+    except Exception:
+        pass
     if smooth_iter > 0:
         trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iter)
     return mesh
