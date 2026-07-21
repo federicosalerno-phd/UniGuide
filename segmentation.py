@@ -161,9 +161,27 @@ def list_series(root):
     return out
 
 
-def _copy_series_local(files, dst):
-    """Copy a series' files to a local folder in parallel, with progress."""
+def _copy_series_local(files, dst, series_id=None):
+    """Copy a series' files to a local folder in parallel, with progress.
+
+    The local folder is KEYED to the series id: if it already holds a different
+    series (e.g. a previous leg run left its DICOM behind) it is wiped first, so a
+    head run can never reuse leftover leg files. Without this, the indexed names
+    ``000000.dcm..`` collide and the skip-if-exists below would keep the stale
+    series, and series_to_nifti's "read the only series present" fallback would
+    then convert the WRONG anatomy.
+    """
     from concurrent.futures import ThreadPoolExecutor
+    marker = os.path.join(dst, ".series_id")
+    prev = None
+    if os.path.isdir(dst):
+        try:
+            with open(marker, "r", encoding="utf-8") as fh:
+                prev = fh.read().strip()
+        except Exception:
+            prev = None
+    if prev != (series_id or ""):
+        shutil.rmtree(dst, ignore_errors=True)   # different (or unknown) series -> start clean
     os.makedirs(dst, exist_ok=True)
     total = len(files)
     done = [0]
@@ -183,6 +201,11 @@ def _copy_series_local(files, dst):
 
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(cp, enumerate(files)))
+    try:
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(series_id or "")
+    except Exception:
+        pass
     log("copied %d files -> %s" % (total, dst))
     return dst
 
@@ -443,7 +466,7 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
     sp_w = np.array([float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1])])  # sitk (x,y,z)
     origin = np.array(crop_img.GetOrigin(), float)
     D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
-    zstep = max(2, int(round(2.5 / float(cm.spacing[1]))))          # a CT slice every ~2.5 mm of working Z
+    zstep = max(1, int(round(1.8 / float(cm.spacing[1]))))          # a CT slice every ~1.8 mm of working Z (denser = fluid sweep)
     state = {"levels": None, "emitted": set(), "count": 0}
 
     def _corner(cx, cy, cz):                                        # one (X',Y',Z') voxel -> world mm
@@ -460,11 +483,11 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             ny, nx = ct.shape
             rgba = np.zeros((ny, nx, 4), np.uint8)
             rgba[..., 0] = gi; rgba[..., 1] = gi; rgba[..., 2] = gi
-            rgba[..., 3] = np.where(gi > 70, 60, 0).astype(np.uint8)             # faint CT haze so slices stack see-through
+            rgba[..., 3] = np.where(gi > 70, 42, 0).astype(np.uint8)             # faint CT haze so slices stack see-through
             rgba[mand] = (255, 74, 42, 255)                                      # mandible: opaque red
             im = Image.fromarray(rgba, "RGBA")
-            if im.width > 256:
-                im = im.resize((256, max(1, int(256 * im.height / im.width))))
+            if im.width > 400:                                                   # keep it crisp: 400 px is sharp on screen but still small over stderr
+                im = im.resize((400, max(1, int(400 * im.height / im.width))))
             buf = _io.BytesIO(); im.save(buf, "PNG")
             crn = [_corner(0, 0, zc), _corner(nx - 1, 0, zc), _corner(nx - 1, ny - 1, zc), _corner(0, ny - 1, zc)]
             cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
@@ -484,7 +507,7 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             nz = int(logits.shape[2])
             state["levels"] = list(range(zstep // 2, nz, zstep))     # the Z levels we show, evenly spaced
         for zc in state["levels"]:                                   # emit any level now finalized, not yet shown
-            if zc in state["emitted"] or state["count"] >= 60:
+            if zc in state["emitted"] or state["count"] >= 96:
                 continue
             if float(npred[:, zc, :].max()) > 0.5:                   # this slice has been segmented
                 state["emitted"].add(zc)
@@ -772,7 +795,7 @@ def _prepare_local_series(dicom_folder, series_id, work_dir):
     files = s.get(series_id, {}).get("files")
     if not files:
         raise ValueError("series not found under %s" % dicom_folder)
-    return _copy_series_local(files, os.path.join(work_dir, "dicom_local"))
+    return _copy_series_local(files, os.path.join(work_dir, "dicom_local"), series_id)
 
 
 def ct_bundle(dicom_folder, series_id, work_dir):
@@ -811,7 +834,9 @@ def segment(dicom_folder, series_id, region, work_dir):
         label_nii = run_dental_nnunet(nifti, work_dir) or run_moose(nifti, cfg["moose_model"], work_dir)
     else:
         label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
-    stls = labels_to_stls(label_nii, cfg, os.path.join(work_dir, "stl"))
+    stl_dir = os.path.join(work_dir, "stl")
+    shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
+    stls = labels_to_stls(label_nii, cfg, stl_dir)
     log("PHASE preparing the editor")
     bundle = save_edit_bundle(nifti, label_nii, cfg, os.path.join(work_dir, "edit"))
     log("PHASE done")

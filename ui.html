@@ -4419,7 +4419,7 @@ function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,
 let _sliceGroup=null,_growHidDemo=false,_sliceN=0,_sliceAnim=0,_sliceQ=[],_sliceDrain=0;
 function segSliceAnim(){ if(!_sliceGroup){ _sliceAnim=0; return; }
   const now=performance.now()/1000;
-  _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.5)); });
+  _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.3)); });
   invalidate(); _sliceAnim=requestAnimationFrame(segSliceAnim); }
 function _sliceReveal(it){                    // add ONE slice plane at its world corners, fade it in
   if(!_sliceGroup) return;
@@ -4439,7 +4439,7 @@ function _sliceReveal(it){                    // add ONE slice plane at its worl
 function _sliceDrainTick(){                    // reveal ONE queued slice at a time, spread over the wait
   if(!_sliceGroup){ _sliceDrain=0; return; }
   if(_sliceQ.length) _sliceReveal(_sliceQ.shift());
-  const iv=Math.max(400,Math.min(2600,14000/Math.max(1,_sliceQ.length)));   // long queue -> faster, short -> slower
+  const iv=Math.max(150,Math.min(900,6000/Math.max(1,_sliceQ.length)));    // long queue -> faster, short -> slower (fluid, keeps up with compute)
   _sliceDrain=setTimeout(_sliceDrainTick, iv);
 }
 function segSlice(cornersStr,b64){
@@ -4612,7 +4612,8 @@ function segShowSkull(path){                                    // translucent s
     const g=new THREE.BufferGeometry();
     g.setAttribute('position',new THREE.Float32BufferAttribute(d.positions,3));
     g.translate(-off.x,-off.y,-off.z); g.computeVertexNormals();
-    const m=new THREE.MeshStandardMaterial({color:0xe2e6ee,roughness:.75,metalness:0,transparent:true,opacity:0.28,depthWrite:false,side:THREE.DoubleSide});
+    // BackSide: only the FAR shell of the skull draws, so it never fogs the mandible in front → the bone stays crisp, the skull reads as a cradle behind it
+    const m=new THREE.MeshStandardMaterial({color:0xe2e6ee,roughness:.75,metalness:0,transparent:true,opacity:0.30,depthWrite:false,side:THREE.BackSide});
     const mesh=new THREE.Mesh(g,m); mesh.name='skull'; mesh.renderOrder=-1; modelPivot.add(mesh);
     window._skullMesh=mesh; invalidate();
   });
@@ -4635,6 +4636,9 @@ function segLoadResult(r){
     const others=Object.keys(stls).filter(function(k){return k!==key;});
     segLog('Loaded '+key+'. Also produced: '+(others.join(', ')||'none'));
     closeSegmentation(); toast(key+' segmented and loaded.');
+    // Size the canvas + reframe once layout has settled, so the model is SHARP immediately
+    // (previously it looked soft until a Model→Segment round-trip re-ran resize()).
+    requestAnimationFrame(function(){ if(typeof resize==='function')resize(); fitView(); invalidate(); });
   });
 }
 
