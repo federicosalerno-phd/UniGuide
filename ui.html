@@ -5101,7 +5101,25 @@ function buildFibulaGuides(light){
     addFibSubset(group, sg, fibGuideMeshes, fibHandles, k, undefined, light);
   });
   fibCutPlanes.forEach(m=>m.visible=(curP===DONOR)); fibGuideMeshes.forEach(m=>m.visible=(curP===DONOR)); fibHandles.forEach(m=>m.visible=(curP===DONOR));
+  applyReconRotToDonorGuides();
   if(typeof applyOverlayState==='function')applyOverlayState();   // re-apply the per-guide overlay rows after this force-set (see buildAssembly)
+}
+// Item 5b: in the DONOR (Fibula) VIEW ONLY, rigidly rotate the whole guide group (guides + drill holes
+// + cut planes + handles) about the FIBULA axis by the reconstruction rotation P.fibReconRot. This shows
+// where each guide must sit on the donor to reproduce the graft as it was clocked in Reconstruction.
+// PURE VISUALISATION: nothing on the mandible moves (there fibReconRot already spins fibMandPieces). It is
+// mathematically exact — the recon spin about the mandible segment axis maps, through the rigid
+// fibula→mandible transform, to the same-angle spin about the fibula axis. Rebuilt on every Donor entry,
+// so it always reflects the current fibReconRot.
+function applyReconRotToDonorGuides(){
+  if(curP!==DONOR || !fibFrame || !P.fibReconRot) return;
+  const ang=P.fibReconRot*Math.PI/180, o=fibFrame.o, d=fibFrame.d.clone().normalize();
+  const Rot=new THREE.Matrix4().makeTranslation(o.x,o.y,o.z)
+    .multiply(new THREE.Matrix4().makeRotationAxis(d,ang))
+    .multiply(new THREE.Matrix4().makeTranslation(-o.x,-o.y,-o.z));
+  [...fibGuideMeshes,...fibCutPlanes,...fibHandles].forEach(m=>{
+    if(m && m.parent===group){ m.applyMatrix4(Rot); m.matrixWorldNeedsUpdate=true; }   // top-level only → children (rims/holes) rotate with their parent, never twice
+  });
 }
 // discrete guide sizes (the unified guides are NOT freely scalable — pick a size)
 const GUIDE_SIZES=[{id:'S',f:0.78},{id:'M',f:1.0},{id:'L',f:1.26},{id:'XL',f:1.55}];
