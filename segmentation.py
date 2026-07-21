@@ -683,11 +683,21 @@ def constrain_to(mask, host_mask, spacing, dilate_mm=4.0):
     return mask & host_d
 
 
-def mask_to_mesh(mask, img, smooth_iter=10):
-    """Marching-cubes a binary mask into a Trimesh in the image physical frame."""
+def mask_to_mesh(mask, img, smooth_iter=10, presmooth=0.0):
+    """Marching-cubes a binary mask into a Trimesh in the image physical frame.
+
+    ``presmooth`` (>0) gaussian-blurs the mask BEFORE marching cubes, in voxel units, so a
+    COARSE segmentation does not iso-surface into visible axial terraces/stair-steps. MOOSE
+    resamples the leg bones from a low internal spacing, so the label mask has multi-voxel
+    plateaus that marching cubes turns into steps; anti-aliasing the mask removes them at the
+    source (mesh smoothing alone only softens them). Keep it 0 for thin structures (the nerve
+    canal), which a blur would erase.
+    """
     if mask.sum() < 50:
         return None
-    m = np.pad(mask.astype(np.uint8), 1, mode="constant")
+    m = np.pad(mask.astype(np.float32), 1, mode="constant")
+    if presmooth and presmooth > 0:
+        m = ndimage.gaussian_filter(m, sigma=float(presmooth))
     verts, faces, _, _ = measure.marching_cubes(m, level=0.5)
     verts -= 1.0
     idx = verts[:, ::-1]  # (k,j,i) -> (i,j,k)
@@ -767,7 +777,14 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
         # A secondary structure failing to mesh (a thin canal, say) must never sink the whole
         # run: the mandible is built first and already emitted, so keep going.
         try:
-            mesh = mask_to_mesh(mask, img)
+            nm = name.lower()
+            if "fibula" in nm or "tibia" in nm:      # coarse MOOSE leg bones: anti-alias hard + smooth well
+                ps, si = 1.5, 28
+            elif "canal" in nm or "nerve" in nm or "vessel" in nm:   # thin tubes: NO blur (it would erase them)
+                ps, si = 0.0, 8
+            else:                                    # mandible / skull: gentle anti-alias, keep the detail
+                ps, si = 0.6, 12
+            mesh = mask_to_mesh(mask, img, smooth_iter=si, presmooth=ps)
             if mesh is None:
                 log("label", lab, name, "too small after cleanup"); continue
             path = os.path.join(out_dir, name + ".stl")
