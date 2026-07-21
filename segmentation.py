@@ -728,20 +728,28 @@ def constrain_to(mask, host_mask, spacing, dilate_mm=4.0):
 def mask_to_mesh(mask, img, smooth_iter=10, presmooth=0.0):
     """Marching-cubes a binary mask into a Trimesh in the image physical frame.
 
-    ``presmooth`` (>0) gaussian-blurs the mask BEFORE marching cubes, in voxel units, so a
-    COARSE segmentation does not iso-surface into visible axial terraces/stair-steps. MOOSE
-    resamples the leg bones from a low internal spacing, so the label mask has multi-voxel
-    plateaus that marching cubes turns into steps; anti-aliasing the mask removes them at the
-    source (mesh smoothing alone only softens them). Keep it 0 for thin structures (the nerve
-    canal), which a blur would erase.
+    ``presmooth`` gaussian-blurs the mask BEFORE marching cubes (voxel units). MOOSE resamples the
+    leg bones from a low internal spacing, so the label mask has plateaus that marching cubes turns
+    into transverse stair-steps. It can be a SCALAR (isotropic) or a PER-AXIS tuple (sz, sy, sx):
+    for the leg bones a strong sigma ALONG the slice axis (axis 0 = the shaft) kills the transverse
+    terraces, while a small in-plane sigma keeps the cross-section sharp — so the artefact goes but
+    the real detail (cross-section shape, the crest running along the shaft) is preserved. Keep it 0
+    for thin structures (the nerve canal), which a blur would erase.
     """
     if mask.sum() < 50:
         return None
-    m = np.pad(mask.astype(np.float32), 1, mode="constant")
-    if presmooth and presmooth > 0:
-        m = ndimage.gaussian_filter(m, sigma=float(presmooth))
+    # Crop to the mask bbox with a margin (so a full-res leg volume is never blurred whole), blur,
+    # marching-cubes, then shift the verts back into the full index space.
+    nz = np.argwhere(mask)
+    lo = nz.min(0); hi = nz.max(0) + 1
+    pad = max(4, int(3 * float(np.max(np.asarray(presmooth, dtype=float)))) + 1)   # room for the blur tail
+    z0, y0, x0 = np.maximum(lo - pad, 0)
+    z1, y1, x1 = np.minimum(hi + pad, mask.shape)
+    m = mask[z0:z1, y0:y1, x0:x1].astype(np.float32)
+    if presmooth is not None and np.any(np.asarray(presmooth, dtype=float) > 0):
+        m = ndimage.gaussian_filter(m, sigma=presmooth)
     verts, faces, _, _ = measure.marching_cubes(m, level=0.5)
-    verts -= 1.0
+    verts += np.array([z0, y0, x0], dtype=np.float64)   # cropped (z,y,x) index -> full index space
     idx = verts[:, ::-1]  # (k,j,i) -> (i,j,k)
     sp = np.array(img.GetSpacing(), dtype=np.float64)
     origin = np.array(img.GetOrigin(), dtype=np.float64)
@@ -820,8 +828,9 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
         # run: the mandible is built first and already emitted, so keep going.
         try:
             nm = name.lower()
-            if "fibula" in nm or "tibia" in nm:      # coarse MOOSE leg bones: anti-alias hard + smooth well
-                ps, si = 1.5, 28
+            if "fibula" in nm or "tibia" in nm:      # MOOSE leg bones: the terraces are TRANSVERSE steps along the
+                ps, si = (4.5, 0.6, 0.6), 6          # slice axis (array axis 0). Blur HARD along it, stay sharp in-plane,
+                                                     # minimal mesh smoothing → terraces gone, cross-section + shaft detail kept.
             elif "canal" in nm or "nerve" in nm or "vessel" in nm:   # thin tubes: NO blur (it would erase them)
                 ps, si = 0.0, 8
             else:                                    # mandible / skull: gentle anti-alias, keep the detail
