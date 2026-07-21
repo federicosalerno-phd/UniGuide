@@ -1514,16 +1514,15 @@ function loop(){
   if(interacting) _needRender=true;
   // the selection pulse renders at ~20fps when otherwise idle → frees the GPU on heavy scenes
   if(pulse){ if(interacting) _needRender=true; else if((++_pulseTick%3)===0) _needRender=true; }
-  if(++_hbeat>=10){ _hbeat=0; _needRender=true; }   // ~6fps idle safety net → never frozen (≤~0.16s stale)
-  // CONTINUOUS rendering: draw every frame so the QtWebEngine compositor always has a fresh buffer (no
-  // black-checkerboard flicker) and the selection glow / motion is smooth 60fps (no on-demand refresh ticks).
-  _needRender=false;
-  if(billboards.length){ billboards=billboards.filter(b=>b.parent); billboards.forEach(b=>b.quaternion.copy(camera.quaternion)); }
-  if(manipHL&&manipHL.t&&manipHL.t.material){ const m=manipHL.t.material, s=0.5+0.5*Math.sin(performance.now()*0.0032);   // gentle breathing, never dark
-    m.emissiveIntensity=0.55+0.35*s; m.color.setHex(manipHL.c); }   // steady soft glow — the persistent dial ring already marks the selection
-  // (dial no longer shimmers — steady ring; the ONLY pulse is the emissive glow on the selected object above)
-  renderer.render(scene,activeCam());
-  if(modelLoaded && curP>0) renderGizmo();   // corner orientation gizmo
+  if(++_hbeat>=6){ _hbeat=0; _needRender=true; }   // ~10 fps idle heartbeat: keeps the QtWebEngine compositor buffer fresh (no black-checkerboard) WITHOUT the 60 fps continuous draw that saturated the GPU and made the idle view flicker/refresh
+  const _draw=_needRender; _needRender=false;   // ON-DEMAND: draw during interaction / the selection pulse / the heartbeat, otherwise idle
+  if(_draw){
+    if(billboards.length){ billboards=billboards.filter(b=>b.parent); billboards.forEach(b=>b.quaternion.copy(camera.quaternion)); }
+    if(manipHL&&manipHL.t&&manipHL.t.material){ const m=manipHL.t.material, s=0.5+0.5*Math.sin(performance.now()*0.0032);   // gentle breathing, never dark
+      m.emissiveIntensity=0.55+0.35*s; m.color.setHex(manipHL.c); }   // steady soft glow — the persistent dial ring already marks the selection
+    renderer.render(scene,activeCam());
+    if(modelLoaded && curP>0) renderGizmo();   // corner orientation gizmo
+  }
 }
 // frame a single object on its bounding-box centre (mandible / fibula independently)
 function fitObject(obj){
@@ -4454,6 +4453,11 @@ function segSlice(cornersStr,b64){
     disposeMesh(bridge); bridge=null;
     if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
     if(window._skullMesh){ disposeMesh(window._skullMesh); window._skullMesh=null; }
+    // The slices carry WORLD coordinates, so their parent must be un-transformed. After the Orient
+    // step modelPivot is rotated/translated; on a SECOND segmentation that put the slices off-screen
+    // (the reveal only ever showed on the first run). Reset it so the sweep is visible every time.
+    if(modelPivot){ modelPivot.position.set(0,0,0); modelPivot.quaternion.identity(); modelPivot.scale.set(1,1,1); }
+    P.rx=P.ry=P.rz=0;
     _sliceGroup=new THREE.Group(); _sliceGroup.name='sliceScan'; modelPivot.add(_sliceGroup); _sliceN=0; _sliceQ=[];
     isDemo=false; segSliceAnim();
   }
@@ -4638,7 +4642,7 @@ function segLoadResult(r){
     closeSegmentation(); toast(key+' segmented and loaded.');
     // Size the canvas + reframe once layout has settled, so the model is SHARP immediately
     // (previously it looked soft until a Model→Segment round-trip re-ran resize()).
-    requestAnimationFrame(function(){ if(typeof resize==='function')resize(); fitView(); invalidate(); });
+    requestAnimationFrame(function(){ if(typeof resize==='function')resize(); fitView(); if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate(); });
   });
 }
 
@@ -6023,6 +6027,8 @@ let trimSolid={L:null,R:null};   // the DEBUG extruded-silhouette solids (mandib
 // go() would use (so the toggle just AND-s onto it — ON restores, OFF hides); objs() = the meshes it controls.
 const OV_ITEMS=[
   {k:'bone',  label:'Mandible',     chip:'#c9d4e3', base:()=>(curP!==DONOR)&&$('ct-bone').classList.contains('on'), objs:()=>boneMesh?[boneMesh]:[]},   // visible in EVERY non-fibula step, incl. Orient (step 1)
+  {k:'skull', label:'Skull',        chip:'#e2e6ee', base:()=>(curP===SEG)&&!!window._skullMesh, objs:()=>window._skullMesh?[window._skullMesh]:[]},   // translucent context, controllable on the Segmentation step
+  {k:'canal', label:'Nerve canal',  chip:'#ffdc28', base:()=>(curP!==DONOR)&&!!window._canalMesh, objs:()=>window._canalMesh?[window._canalMesh]:[]},   // rides the mandible (useful to avoid the nerve when planning)
   {k:'resect',label:'Resect part',  chip:'#d98a7a', base:()=>(curP===SEGMENTS||curP===FIBGUIDE||curP===RECON), objs:()=>[resectMesh].concat(resectExtra||[]).filter(Boolean)},
   {k:'gL',    label:'Guide L',      chip:'#6aa3ff', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.L?[guide.L]:[]},
   {k:'gR',    label:'Guide R',      chip:'#4585e0', base:()=>(curP===MGUIDE||curP===CONN||curP===FIBGUIDE), objs:()=>guide.R?[guide.R]:[]},
@@ -6046,7 +6052,7 @@ function fibRows(){ const base=()=>(curP===FIBGUIDE||curP===DONOR);
     objs:()=>fibStore().filter(o=>o&&o.userData&&o.userData.fibPart==null&&o.userData.fibGi==null)});
   return rows; }
 function ovAll(){ return OV_ITEMS.flatMap(it=>it.k==='fib'?fibRows():[it]); }
-const ovState={}; const ovSt=k=>ovState[k]||(ovState[k]={show:true, op:k==='trim'?0.6:1});   // lazy: the fib0..fibN keys only exist once the guides do
+const ovState={}; const ovSt=k=>ovState[k]||(ovState[k]={show:true, op:k==='trim'?0.6:(k==='skull'?0.3:1)});   // lazy: the fib0..fibN keys only exist once the guides do; the skull starts as a faint shell
 const ovItem=k=>ovAll().find(it=>it.k===k);
 function ovElemRow(k){ const it=ovItem(k); if(!it)return ''; const st=ovSt(k), pc=Math.round(st.op*100);
   return `<div class="po-row"><input type="checkbox" ${st.show?'checked':''} onchange="ovToggle('${k}',this.checked)"><span class="po-chip" style="background:${it.chip}"></span><span class="po-lbl">${it.label}</span><input type="range" min="0" max="100" value="${pc}" oninput="ovOpac('${k}',this.value)"><span class="po-pct" id="ovOp_${k}">${pc}%</span></div>`; }
@@ -6057,7 +6063,7 @@ function applyOverlayState(){ ovAll().forEach(it=>{ const st=ovSt(it.k); let bas
   objs.forEach(o=>{ if(!o)return; o.visible=base&&st.show; if(o.visible)setObjOpacity(o, st.op); }); }); }
 // persistent top-left overlay: toggle / fade every scene element + each cutting plane in ANY step
 function renderPlaneOverlay(){ const el=$('planeOverlay'); if(!el)return;
-  const elems=ovElements(), showPlanes=allPlanesSet()&&planes.length&&curP!==DONOR;
+  const elems=ovElements(), showPlanes=allPlanesSet()&&planes.length&&curP!==DONOR&&curP!==SEG;
   const has=(curP>=2)&&(elems.length||showPlanes);
   el.style.display=has?'block':'none'; if(!has){ el.innerHTML=''; applyOverlayState(); return; }
   let h='';
@@ -6528,7 +6534,7 @@ const VORDER=[11,0,1,2,3,4,5,6,7,8,9,10];     // visual/tab order: Segment first
 // mandible guides on, EXCEPT the segments step (where it would sit on top of the segment editing). It used to be
 // an ad-hoc `(curP===MGUIDE||curP===CONN||curP===FIBGUIDE)` allow-list duplicated in three writers that fought
 // each other (go(), the overlay's conn row, applyAsmGroups) — that conflict is what made it flicker/vanish.
-const connStepOK=()=>curP>=MGUIDE && curP!==SEGMENTS;
+const connStepOK=()=>curP>=MGUIDE && curP!==SEGMENTS && curP!==SEG;   // never on the Segmentation step (only mandible + skull there)
 const connVis=()=>!!bridge && connectorGenerated && connStepOK();
 const ASSEMBLY=-1;   // (Assembly step merged into F.guides)
 function unlockTabs(){ for(let i=1;i<NSTEP;i++){const t=$('tab'+i); t.classList.remove('locked');} }
@@ -6573,7 +6579,7 @@ function go(idx){
   if(teethMesh)teethMesh.visible=(!fibEnv)&&(P.teeth.show!==false);   // teeth reference: rides the mandible; hidden in the fibula-only Donor env
   planes.forEach(pl=>{
     (pl.markers||[]).forEach(m=>m.visible=(idx===2 && !pl.autoPlaced));   // corner dots ONLY for manually-clicked planes (auto-placed → hidden)
-    if(pl.mesh){ pl.mesh.visible=(!fibEnv)&&(idx>=2)&&$('ct-plane').classList.contains('on')&&(pl.show!==false);   // controllable in EVERY step via the top-left overlay
+    if(pl.mesh){ pl.mesh.visible=(!fibEnv)&&(idx>=2)&&(idx!==SEG)&&$('ct-plane').classList.contains('on')&&(pl.show!==false);   // controllable in EVERY step via the top-left overlay; hidden on Segmentation
       if(pl.op!=null)pl.mesh.material.opacity=pl.op; }   // per-plane opacity
   });
   if(tumorMesh)tumorMesh.visible=(idx===2); if(axisLine)axisLine.visible=(idx===2); tumorMarkers.concat(axisHandles).forEach(m=>m.visible=(idx===2));
