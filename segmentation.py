@@ -274,6 +274,48 @@ def run_moose(ct_nifti, model, work_dir):
     return hits[-1]
 
 
+def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=3.0, max_slices=90, target_px=480):
+    """Post-segmentation SLICE reveal for a model that gives NO per-tile hook (MOOSE, subprocess):
+    sweep the CT along its long axis and emit SLICE events (faint CT haze + the bones painted red),
+    exactly the format the head reveal uses, so the leg forms slice by slice in 3D too. The backend
+    emits fast; the UI queue-drains them into a smooth continuous sweep."""
+    try:
+        from PIL import Image
+        import io as _io, base64 as _b64
+    except Exception as e:
+        log("leg reveal libs missing:", e); return
+    ct_img = sitk.ReadImage(ct_nifti)
+    ct = sitk.GetArrayFromImage(ct_img).astype(np.float32)          # (z,y,x) HU
+    lab = sitk.GetArrayFromImage(sitk.ReadImage(label_nii)).astype(np.int32)
+    if lab.shape != ct.shape:
+        log("leg reveal: shape mismatch"); return
+    nz, ny, nx = ct.shape
+    bone = np.isin(lab, list(bone_vals))
+    zstep = max(1, int(round(step_mm / float(ct_img.GetSpacing()[2]))))
+    zs = [z for z in range(0, nz, zstep) if bone[z].any()]         # only slices that actually hold bone
+    if not zs:
+        return
+    if len(zs) > max_slices:
+        zs = [zs[i] for i in np.linspace(0, len(zs) - 1, max_slices).astype(int)]
+
+    def _corner(x, y, z):
+        return ct_img.TransformContinuousIndexToPhysicalPoint([float(x), float(y), float(z)])
+
+    for zi in zs:
+        gi = (np.clip((ct[zi] + 150.0) / 1500.0, 0, 1) * 255).astype(np.uint8)   # bone-ish window
+        rgba = np.zeros((ny, nx, 4), np.uint8)
+        rgba[..., 0] = gi; rgba[..., 1] = gi; rgba[..., 2] = gi
+        rgba[..., 3] = np.where(gi > 60, 45, 0).astype(np.uint8)                  # faint haze, slices stack see-through
+        rgba[bone[zi]] = (255, 74, 42, 255)                                       # bone: opaque red
+        im = Image.fromarray(rgba, "RGBA")
+        if im.width > target_px:
+            im = im.resize((target_px, max(1, int(target_px * im.height / im.width))))
+        buf = _io.BytesIO(); im.save(buf, "PNG")
+        crn = [_corner(0, 0, zi), _corner(nx - 1, 0, zi), _corner(nx - 1, ny - 1, zi), _corner(0, ny - 1, zi)]
+        cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
+        log("SLICE %s %s" % (cs, _b64.b64encode(buf.getvalue()).decode()))
+
+
 def _find_dental_model():
     """Locate the DentalSegmentator (Dataset112) 3d_fullres trainer folder and the fold that
     actually has a checkpoint. Returns (trainer_folder, fold) or (None, None). MOOSE ships the
@@ -486,8 +528,8 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             rgba[..., 3] = np.where(gi > 70, 42, 0).astype(np.uint8)             # faint CT haze so slices stack see-through
             rgba[mand] = (255, 74, 42, 255)                                      # mandible: opaque red
             im = Image.fromarray(rgba, "RGBA")
-            if im.width > 400:                                                   # keep it crisp: 400 px is sharp on screen but still small over stderr
-                im = im.resize((400, max(1, int(400 * im.height / im.width))))
+            if im.width > 480:                                                   # crisp: 480 px is sharp on screen, still small over stderr
+                im = im.resize((480, max(1, int(480 * im.height / im.width))))
             buf = _io.BytesIO(); im.save(buf, "PNG")
             crn = [_corner(0, 0, zc), _corner(nx - 1, 0, zc), _corner(nx - 1, ny - 1, zc), _corner(0, ny - 1, zc)]
             cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
@@ -868,6 +910,10 @@ def segment(dicom_folder, series_id, region, work_dir):
         label_nii = run_dental_nnunet(nifti, work_dir) or run_moose(nifti, cfg["moose_model"], work_dir)
     else:
         label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+        try:                                     # MOOSE gives no live hook → replay the leg slices so it forms in 3D like the head
+            emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
+        except Exception as e:
+            log("leg reveal skipped:", e)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
     stls = labels_to_stls(label_nii, cfg, stl_dir)

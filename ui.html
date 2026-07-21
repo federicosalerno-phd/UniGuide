@@ -4468,12 +4468,12 @@ function segAnimReset(){ cancelAnimationFrame(segA.raf); segA={shown:0,target:0,
 let _sliceGroup=null,_growHidDemo=false,_sliceN=0,_sliceAnim=0,_sliceQ=[],_sliceDrain=0;
 function segSliceAnim(){ if(!_sliceGroup){ _sliceAnim=0; return; }
   const now=performance.now()/1000;
-  _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.3)); });
+  _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.25)); });
   invalidate(); _sliceAnim=requestAnimationFrame(segSliceAnim); }
 function _sliceReveal(it){                    // add ONE slice plane at its world corners, fade it in
   if(!_sliceGroup) return;
   const c=it.c, tex=new THREE.Texture(it.img);
-  tex.flipY=false; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.needsUpdate=true;
+  tex.flipY=false; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.generateMipmaps=false; tex.needsUpdate=true;   // NPOT textures → no mipmaps (WebGL1); sharpness comes from the 480 px source
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.Float32BufferAttribute([c[0][0],c[0][1],c[0][2], c[1][0],c[1][1],c[1][2], c[2][0],c[2][1],c[2][2], c[3][0],c[3][1],c[3][2]],3));
   g.setAttribute('uv',new THREE.Float32BufferAttribute([0,0, 1,0, 1,1, 0,1],2));
@@ -4488,27 +4488,29 @@ function _sliceReveal(it){                    // add ONE slice plane at its worl
 function _sliceDrainTick(){                    // reveal ONE queued slice at a time, spread over the wait
   if(!_sliceGroup){ _sliceDrain=0; return; }
   if(_sliceQ.length) _sliceReveal(_sliceQ.shift());
-  const iv=Math.max(150,Math.min(900,6000/Math.max(1,_sliceQ.length)));    // long queue -> faster, short -> slower (fluid, keeps up with compute)
+  const iv=Math.max(90,Math.min(650,4600/Math.max(1,_sliceQ.length)));     // long queue -> faster, short -> slower (fluid, continuous, keeps up with compute)
   _sliceDrain=setTimeout(_sliceDrainTick, iv);
 }
 function segSlice(cornersStr,b64){
-  if(segState.region!=='head') return;
+  if(segState.region!=='head' && segState.region!=='leg') return;   // reveal for BOTH the head (nnU-Net) and the leg (MOOSE replay)
   if(!renderer){ initGL(); loop(); }
   if(!modelPivot) return;
   const c=cornersStr.split(';').map(function(s){return s.split(',').map(Number);});
   if(c.length!==4 || c.some(function(p){return p.length!==3||p.some(isNaN);})) return;
   if(!_sliceGroup){                 // first slice: take over the view
     _growHidDemo=false;
-    if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
-    disposeMesh(bridge); bridge=null;
-    if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
-    if(window._skullMesh){ disposeMesh(window._skullMesh); window._skullMesh=null; }
-    // The slices carry WORLD coordinates, so their parent must be un-transformed. After the Orient
-    // step modelPivot is rotated/translated; on a SECOND segmentation that put the slices off-screen
-    // (the reveal only ever showed on the first run). Reset it so the sweep is visible every time.
-    if(modelPivot){ modelPivot.position.set(0,0,0); modelPivot.quaternion.identity(); modelPivot.scale.set(1,1,1); }
-    P.rx=P.ry=P.rz=0;
-    _sliceGroup=new THREE.Group(); _sliceGroup.name='sliceScan'; modelPivot.add(_sliceGroup); _sliceN=0; _sliceQ=[];
+    if(segState.region==='head'){   // the head produces a NEW mandible → drop the old one and its overlays
+      if(boneMesh){ if(isDemo){ boneMesh.visible=false; _growHidDemo=true; } else { disposeMesh(boneMesh); boneMesh=null; } }
+      disposeMesh(bridge); bridge=null;
+      if(window._canalMesh){ disposeMesh(window._canalMesh); window._canalMesh=null; }
+      if(window._skullMesh){ disposeMesh(window._skullMesh); window._skullMesh=null; }
+    } else {                        // the leg keeps the mandible (head work) — just HIDE everything while the leg forms
+      if(boneMesh)boneMesh.visible=false; if(fibulaMesh)fibulaMesh.visible=false; if(bridge)bridge.visible=false;
+      if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false;
+    }
+    // The slices carry WORLD coordinates, so their parent must be un-transformed: use `group` (identity),
+    // not modelPivot (which the Orient step rotates and which holds the mandible for the leg reveal).
+    _sliceGroup=new THREE.Group(); _sliceGroup.name='sliceScan'; group.add(_sliceGroup); _sliceN=0; _sliceQ=[];
     isDemo=false; segSliceAnim();
   }
   const img=new Image();
@@ -4519,7 +4521,9 @@ function segClearGrow(restoreDemo){ if(_sliceAnim){ cancelAnimationFrame(_sliceA
   if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[];
   if(_sliceGroup){ _sliceGroup.traverse(function(o){ if(o.material&&o.material.map)o.material.map.dispose(); }); disposeMesh(_sliceGroup); _sliceGroup=null; }
   _sliceN=0;
-  if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false; }
+  if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false;
+  if(segState.region==='leg'){ if(boneMesh)boneMesh.visible=true; if(window._canalMesh)window._canalMesh.visible=true; if(window._skullMesh)window._skullMesh.visible=true; }   // leg reveal only HID the mandible/head work → bring it back
+}
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
   B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
