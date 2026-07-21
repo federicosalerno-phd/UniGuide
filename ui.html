@@ -4554,6 +4554,12 @@ function segStart(){
   if(!s){ toast('Choose a series first.'); return; }
   segState.running=true; $('segStartBtn').disabled=true; $('segStatus').textContent='preparing';
   segBusy(true); segAnimReset(); segProg(2);
+  segClearGrow(false);                          // drop any previous reveal
+  if(segState.region==='leg'){                  // clear the head work off the stage right at Start, so the fibula forms on an empty view (like the head does)
+    if(boneMesh)boneMesh.visible=false; if(fibulaMesh)fibulaMesh.visible=false; if(bridge)bridge.visible=false;
+    if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false;
+    isDemo=false; invalidate();
+  }
   B.seg_run(s.folder, s.series_id, segState.region);
 }
 function segEdit(){
