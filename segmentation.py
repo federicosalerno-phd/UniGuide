@@ -680,19 +680,19 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_forward, debug_dir=None, pain
                 mf = np.asarray(Image.fromarray((mand.astype(np.uint8) * 255)).resize((Xn, Yn), Image.BILINEAR)).astype(np.float32) / 255.0
                 try:
                     from scipy.ndimage import gaussian_filter
-                    mf = gaussian_filter(mf, sigma=1.2)
+                    mf = gaussian_filter(mf, sigma=0.7)                          # light: kill the 1.5 mm staircase but keep a CRISP, defined bone edge
                 except Exception:
                     pass
-                mf = np.clip(mf * 1.35, 0, 1)                                    # keep the bone body solid, only the thin rim feathers
+                mf = np.clip(mf * 1.5, 0, 1)                                     # keep the bone body solid, only a thin rim feathers
                 gi = np.clip((cts + 150.0) / 1500.0, 0, 1) * 255                 # bone-ish HU window on the real HU
-                gih = gi * 0.4
-                base = np.stack([gih * 0.80, gih * 0.88, gih], axis=-1)          # dim cool CT context
-                amber = np.array([255.0, 176.0, 82.0], np.float32)
+                gih = gi * 0.6                                                   # brighter, DEFINED context on the sharp native CT (not dark/foggy)
+                base = np.stack([gih * 0.82, gih * 0.90, gih], axis=-1)          # cool but clearly visible context
+                amber = np.array([255.0, 186.0, 88.0], np.float32)               # bold crisp amber bone
                 a = mf[..., None]
                 rgb = (1.0 - a) * base + a * amber                              # blend amber in by the smooth mask -> no blocky edge
                 rgba = np.zeros((Yn, Xn, 4), np.uint8)
                 rgba[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
-                rgba[..., 3] = np.maximum(np.where(gi > 80, 14, 0), (mf * 255)).astype(np.uint8)   # opaque bone, faint CT haze, soft rim
+                rgba[..., 3] = np.maximum(np.where(gi > 60, 26, 0), (mf * 255)).astype(np.uint8)   # opaque bone, visible-not-foggy CT haze, crisp rim
             else:                                                                # head: the ~0.7 mm working CT is already sharp
                 gi = (np.clip((ct + 1.0) / 4.0, 0, 1) * 255).astype(np.uint8)    # fixed window on the z-scored CT
                 gih = (gi.astype(np.float32) * 0.62)                             # brighter context so the head reads clearly, still below fogging
@@ -835,7 +835,7 @@ def run_dental_nnunet(ct_nifti, work_dir):
             predictor.slice_axis = tf.index(0)                  # sweep along the CT long axis (=1 for DentalSegmentator)
             dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug", "segmentation")
             predictor.reveal_cb = _make_reveal(fine_img, grow_dir, predictor.configuration_manager,
-                                               tf, debug_dir=dbg)
+                                               tf, debug_dir=dbg, hires_ct_path=cropped)   # draw the mandible reveal on the SHARP native CT crop, not the coarse working grid
             log("progressive reveal on (z_ascending=%s, slice_axis=%d)" % (predictor.z_ascending, predictor.slice_axis))
         except Exception as e:
             log("reveal wiring skipped:", e)

@@ -4551,33 +4551,47 @@ function _decodeStl(d){                      // seg_read_stl now sends float32 a
   if(d&&d.b64&&!d.positions){ const bin=atob(d.b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); d.positions=new Float32Array(u.buffer); }
   return d;
 }
+function _scanGlow(mats){                     // inject a moving amber "scan" band into the mesh materials (WIP feel as it materialises)
+  const u={ y:{value:-1e12}, w:{value:16.0} };
+  mats.forEach(function(m){
+    try{
+      m.onBeforeCompile=function(sh){
+        sh.uniforms.uScanY=u.y; sh.uniforms.uScanW=u.w;
+        sh.vertexShader='varying float vWY;\n'+sh.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\n vWY=(modelMatrix*vec4(position,1.0)).y;');
+        sh.fragmentShader='uniform float uScanY;uniform float uScanW;varying float vWY;\n'+sh.fragmentShader.replace('#include <emissivemap_fragment>','#include <emissivemap_fragment>\n totalEmissiveRadiance+=vec3(1.0,0.72,0.34)*smoothstep(uScanW,0.0,abs(vWY-uScanY))*2.4;');
+      };
+      m.needsUpdate=true;
+    }catch(e){}
+  });
+  return u;
+}
 function _crossfadeReveal(finalMesh, revOffset, startCam, fit){
   if(_xfadeRaf){ cancelAnimationFrame(_xfadeRaf); _xfadeRaf=0; }
   const rev=_sliceGroup; _sliceGroup=null;                        // detach so a new Start can't touch it mid-fade
   if(_sliceAnim){ cancelAnimationFrame(_sliceAnim); _sliceAnim=0; }
   if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[]; _sliceN=0;
-  if(rev && revOffset) rev.position.copy(revOffset);             // overlap the finished mesh so it reads as a morph, not two separate things
+  if(rev && revOffset) rev.position.copy(revOffset);             // overlap the finished mesh so the two worlds blend in place
   const revBase = rev? rev.children.map(m=>m.material.opacity) : [];
-  // GROW the finished model in from the bottom up with a moving clip plane, so it visibly GENERATES
-  // (a solid rising into being) instead of popping in whole. The reveal dissolves as it grows and the
-  // camera glides to it. A soft fade near the rising edge hides the clip seam.
+  // GRADUAL CROSS-DISSOLVE between the two worlds: the slice reveal fades OUT while the finished model
+  // fades IN, BOTH visible together the whole time (no clip-fill pop). A bright amber "scan" band sweeps
+  // up the model as it materialises (work-in-progress feel). Slow + eased (easeInOutCubic) so it is
+  // extremely fluid, never steppy.
   const box=new THREE.Box3().setFromObject(finalMesh);
-  const y0=box.min.y-1, y1=box.max.y+1, span=Math.max(1e-3,y1-y0);
-  const clip=new THREE.Plane(new THREE.Vector3(0,-1,0), y0);     // keeps y<=constant; raise the constant to reveal upward
-  if(renderer) renderer.localClippingEnabled=true;
-  const mats=_matsOf(finalMesh); mats.forEach(function(m){ m._wasTransp=m.transparent; m._wasDW=m.depthWrite; m._wasClip=m.clippingPlanes;
-    m.clippingPlanes=[clip]; m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; });
+  const y0=box.min.y, y1=box.max.y, span=Math.max(1,y1-y0);
+  const mats=_matsOf(finalMesh); mats.forEach(function(m){ m._wasTransp=m.transparent; m._wasDW=m.depthWrite; m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; });
+  const scan=_scanGlow(mats);
   if(startCam){ orbit.tgt.copy(startCam.tgt); orbit.r=startCam.r; }   // begin from the reveal framing (ingest may have snapped it)
-  const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=1700;
+  const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=2600;
   (function tick(){
-    const t=Math.min(1,(performance.now()-t0)/dur), e=t*t*(3-2*t);
-    clip.constant = y0 + span*e;                                // sweep the clip up → the model rises into being
-    mats.forEach(function(m){ m.opacity=Math.min(1, 0.25+1.05*e); });   // fills to opaque quickly behind the rising edge
-    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-Math.min(1,e*1.25)); });   // reveal dissolves a touch ahead of the grow
+    const raw=Math.min(1,(performance.now()-t0)/dur);
+    const e = raw<0.5 ? 4*raw*raw*raw : 1-Math.pow(-2*raw+2,3)/2;   // easeInOutCubic → very smooth, no stepping
+    mats.forEach(function(m){ m.opacity=e; });                       // the model fades IN
+    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });   // the slices fade OUT, both visible together
+    scan.y.value = y0 - span*0.12 + span*1.24*raw;                   // the glow band sweeps bottom -> top, a touch past each end
     if(fit){ orbit.tgt.lerpVectors(sTgt,fit.tgt,e); orbit.r=sR+(fit.r-sR)*e; if(fit.min){orbit.min=fit.min;orbit.max=fit.max;} applyOrbit(); }
     invalidate();
-    if(t<1){ _xfadeRaf=requestAnimationFrame(tick); }
-    else { _xfadeRaf=0; mats.forEach(function(m){ m.opacity=1; m.transparent=!!m._wasTransp; m.depthWrite=(m._wasDW!==false); m.clippingPlanes=(m._wasClip||[]); m.needsUpdate=true; }); _disposeGroupChunked(rev); }
+    if(raw<1){ _xfadeRaf=requestAnimationFrame(tick); }
+    else { _xfadeRaf=0; scan.y.value=-1e12; mats.forEach(function(m){ m.opacity=1; m.transparent=!!m._wasTransp; m.depthWrite=(m._wasDW!==false); m.needsUpdate=true; }); _disposeGroupChunked(rev); }
   })();
 }
 function segShowCanal(path){
