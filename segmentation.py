@@ -274,7 +274,7 @@ def run_moose(ct_nifti, model, work_dir):
     return hits[-1]
 
 
-def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=220, target_px=480):
+def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=220, target_px=640):
     """Post-segmentation SLICE reveal for a model that gives NO per-tile hook (MOOSE, subprocess):
     sweep the CT along its long axis and emit SLICE events (faint CT haze + the bones painted red),
     exactly the format the head reveal uses, so the leg forms slice by slice in 3D too. The backend
@@ -310,7 +310,7 @@ def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=
         rgba[bone[zi]] = (255, 176, 82, 255)                                      # warm amber bone, opaque → pops, reads clean while it forms
         im = Image.fromarray(rgba, "RGBA")
         if im.width > target_px:
-            im = im.resize((target_px, max(1, int(target_px * im.height / im.width))))
+            im = im.resize((target_px, max(1, int(target_px * im.height / im.width))), Image.LANCZOS)
         buf = _io.BytesIO(); im.save(buf, "PNG")
         crn = [_corner(0, 0, zi), _corner(nx - 1, 0, zi), _corner(nx - 1, ny - 1, zi), _corner(0, ny - 1, zi)]
         cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
@@ -329,6 +329,32 @@ def _find_dental_model():
     except Exception:
         pass
     bases.append(r"D:/uniguide_seg_models/Dataset112_DentalSegmentator_v100")
+    for base in bases:
+        if not os.path.isdir(base):
+            continue
+        for name in os.listdir(base):
+            tf = os.path.join(base, name)
+            if "3d_fullres" not in name or not os.path.isdir(tf):
+                continue
+            for fold in ("all", "0"):
+                if os.path.exists(os.path.join(tf, "fold_" + fold, "checkpoint_final.pth")):
+                    return tf, fold
+    return None, None
+
+
+def _find_peripheral_model():
+    """Locate the MOOSE Peripheral-Bones (Dataset666) 3d_fullres trainer folder and its fold.
+    This is the SAME nnU-Net MOOSE runs for the leg, but we load it DIRECTLY so the fibula+tibia
+    stream in live per tile (exactly like the mandible) instead of appearing only when MOOSE finishes.
+    Returns (trainer_folder, fold) or (None, None)."""
+    bases = []
+    try:
+        import moosez
+        bases.append(os.path.join(os.path.dirname(moosez.__file__), "models",
+                                  "nnunet_trained_models", "Dataset666_Peripheral-Bones"))
+    except Exception:
+        pass
+    bases.append(r"D:/uniguide_seg_models/Dataset666_Peripheral-Bones")
     for base in bases:
         if not os.path.isdir(base):
             continue
@@ -380,6 +406,32 @@ def _crop_to_bone(nifti_path, out_path, thr=150, margin_mm=10.0):
     return out_path
 
 
+def _resample_to_spacing(in_path, out_path, sp_mm=1.5):
+    """Resample a CT to isotropic ``sp_mm`` (linear). Used for the LEG before the peripheral nnU-Net:
+    a whole lower-limb scan is ~1.5 m of native 0.7 mm slices, and nnU-Net's export step resamples
+    the 32-class probability map back to the INPUT geometry before argmax — at native resolution that
+    is ~15 GB and OOMs. Feeding the model an input already at its own 1.5 mm spacing caps the output
+    geometry (and that final argmax) to ~2-3 GB, with no quality loss (the model works at 1.5 mm
+    anyway, and the bone mesh is heavily smoothed). Returns out_path, or in_path if already coarse."""
+    img = sitk.ReadImage(in_path)
+    isp = np.array(img.GetSpacing(), float)
+    if float(isp.min()) >= sp_mm - 1e-3:                 # already at/above the target: nothing to do
+        return in_path
+    isz = np.array(img.GetSize(), int)
+    out_sz = [max(1, int(round(float(isz[i]) * float(isp[i]) / sp_mm))) for i in range(3)]
+    rs = sitk.ResampleImageFilter()
+    rs.SetOutputSpacing([float(sp_mm)] * 3)
+    rs.SetSize(out_sz)
+    rs.SetOutputOrigin(img.GetOrigin())
+    rs.SetOutputDirection(img.GetDirection())
+    rs.SetInterpolator(sitk.sitkLinear)
+    rs.SetDefaultPixelValue(-1000.0)
+    out = rs.Execute(img)
+    sitk.WriteImage(out, out_path)
+    log("resampled leg to %.1f mm iso:" % sp_mm, out.GetSize(), "from", img.GetSize())
+    return out_path
+
+
 def _reveal_predictor_class():
     """A nnUNetPredictor subclass that reveals the finalized Z-bands DURING the sliding window,
     so the mandible can grow bottom to top in the UI while a SINGLE in-process inference runs:
@@ -399,15 +451,17 @@ def _reveal_predictor_class():
         return None
 
     class RevealPredictor(nnUNetPredictor):
-        reveal_cb = None       # reveal_cb(logits, n_predictions, frontier_working_z, ascending)
+        reveal_cb = None       # reveal_cb(sl, data, logits, n_predictions)
         z_ascending = True
+        slice_axis = 1         # working axis that is the CT long/sweep axis: 1 for DentalSegmentator, 0 for Peripheral-Bones
 
         def _internal_get_sliding_window_slicers(self, image_size):
             s = super()._internal_get_sliding_window_slicers(image_size)
-            # work the tiles bottom to top (working Z is slicer index 2) so the mandible body
-            # finalizes first; flip when the scan's superior direction runs the other way.
+            # work the tiles bottom to top (the sweep axis is slicer index slice_axis+1, since sl[0]
+            # spans the channel) so the bone body finalizes first; flip when the scan's superior
+            # direction runs the other way.
             try:
-                s.sort(key=lambda sl: sl[2].start, reverse=not self.z_ascending)
+                s.sort(key=lambda sl: sl[self.slice_axis + 1].start, reverse=not self.z_ascending)
             except Exception as e:
                 log("slicer sort skipped:", e)
             return s
@@ -464,6 +518,15 @@ def _reveal_predictor_class():
                                 log("reveal hook disabled:", ex)
                                 self.reveal_cb = None
                 queue.join()
+                # Final flush: emit any sweep levels never shown live. The gaussian tile weight tapers
+                # to ~0 within ~0.2*patch of each volume edge, so a plane there never trips npred>0.5;
+                # for the leg the fibula/tibia run to the crop edge, so their tips would otherwise pop
+                # in only at STL_READY. A sl=None call tells the reveal to flush the finalized remainder.
+                if self.reveal_cb is not None:
+                    try:
+                        self.reveal_cb(None, data, predicted_logits, n_predictions)
+                    except Exception as ex:
+                        log("reveal flush skipped:", ex)
                 torch.div(predicted_logits, n_predictions, out=predicted_logits)
                 if torch.any(torch.isinf(predicted_logits)):
                     raise RuntimeError("Encountered inf in predicted array.")
@@ -500,40 +563,102 @@ def _save_cloud_png(world, debug_dir, step):
         log("cloud png skipped:", e)
 
 
-def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
+def _make_reveal(crop_img, grow_dir, cm, transpose_forward, debug_dir=None, paint_labels=(2,), hires_ct_path=None):
     """Build the reveal callback, called per tile: as the sliding window advances up the volume it
-    emits real CT SLICES (the CT at that level with the mandible painted red) about every 2.5 mm,
-    each with its four world corners, so the UI sweeps genuine CT slices up through 3D space, layer
-    by layer, and the red mandible pixels stack into the 3D mandible. No meshing; the solid STL is
-    built once at the very end."""
-    sp_w = np.array([float(cm.spacing[2]), float(cm.spacing[0]), float(cm.spacing[1])])  # sitk (x,y,z)
+    emits real CT SLICES (the CT at that level with the bone painted amber) each with its four world
+    corners, so the UI sweeps genuine CT slices up through 3D space layer by layer and the amber
+    pixels stack into the 3D bone. ``paint_labels`` picks which model labels are the bone: {2} for the
+    mandible (DentalSegmentator), {7,8,26,27} for the donor fibula+tibia (Peripheral-Bones). No
+    meshing; the solid STL is built once at the very end.
+
+    TRANSPOSE-INDEPENDENT: DentalSegmentator uses transpose_forward [1,0,2] (its working slice axis is
+    working-axis-1), the Peripheral-Bones model uses [0,1,2] (slice axis is working-axis-0). We derive
+    the sweep axis and the world corners from transpose_forward so BOTH sweep genuine axial CT slices
+    up the anatomy's long axis (sitk-z), instead of the leg slicing the wrong axis.
+
+    ``hires_ct_path``: for the LEG the model runs at a coarse 1.5 mm, so its working CT looks soft. When
+    given the native-resolution crop, we draw the reveal on that SHARP CT (real HU) and overlay the
+    live 1.5 mm bone mask upsampled onto it, so the leg forms live AND crisp. The head runs fine at its
+    own ~0.7 mm working grid, so it passes nothing and keeps using the working CT."""
+    paint_labels = tuple(int(v) for v in paint_labels)
+    tf = [int(x) for x in transpose_forward]                       # working axis p <- numpy/read axis tf[p]
+    sax = tf.index(0)                                              # working axis that is the CT long (sweep) axis = sitk-z (read axis 0)
+    inax = [a for a in (0, 1, 2) if a != sax]                      # the two in-plane working axes, low..high (both models -> (Y',X'))
+    sp_w = np.zeros(3, float)                                      # working-res spacing in sitk (x,y,z) order, transpose-correct
+    for p in range(3):                                            # working axis p is sitk index (2 - tf[p])
+        sp_w[2 - tf[p]] = float(cm.spacing[p])
     origin = np.array(crop_img.GetOrigin(), float)
     D = np.array(crop_img.GetDirection(), float).reshape(3, 3)
-    zstep = max(1, int(round(0.9 / float(cm.spacing[1]))))          # a CT slice every ~0.9 mm of working Z (dense intermediate slices = continuous, gradual sweep)
+    zstep = max(1, int(round(0.9 / float(cm.spacing[sax]))))       # a CT slice at most every ~0.9 mm along the sweep axis (dense = continuous)
+    MAXSL = 160                                                    # cap the TOTAL slices so a long scan (a whole leg) spans end-to-end, not just its bottom
     state = {"levels": None, "emitted": set(), "count": 0}
 
-    def _corner(cx, cy, cz):                                        # one (X',Y',Z') voxel -> world mm
-        return origin + (np.array([cx, cy, cz], float) * sp_w) @ D.T
+    hi = None                                                     # optional sharp native CT to draw the reveal on (leg only)
+    if hires_ct_path:
+        try:
+            hi_img = sitk.ReadImage(hires_ct_path)
+            hi = {"arr": sitk.GetArrayFromImage(hi_img),          # (sitk-z, sitk-y, sitk-x) native HU; shares crop_img's physical box
+                  "spz": float(hi_img.GetSpacing()[2])}           # native slice spacing along sitk-z
+            log("hi-res reveal CT on:", hi_img.GetSize())
+        except Exception as e:
+            log("hi-res reveal CT load skipped:", e); hi = None
+
+    def _wcorner(ia0, ia1, zc):                                   # in-plane (a0,a1) index + slice level -> world mm
+        w = [0, 0, 0]; w[sax] = zc; w[inax[0]] = ia0; w[inax[1]] = ia1
+        sidx = [0, 0, 0]
+        for p in range(3):
+            sidx[2 - tf[p]] = w[p]                                # working index -> sitk (x,y,z) continuous index
+        return origin + (np.array(sidx, float) * sp_w) @ D.T
 
     def _emit(data, logits, npred, zc):
         try:
             from PIL import Image
             import io as _io, base64 as _b64
-            ct = data[0, :, zc, :].to("cpu").numpy().astype(np.float32)          # (Y', X') z-scored CT
-            seg = (logits[:, :, zc, :] / npred[:, zc, :].clamp(min=1e-4)).argmax(0)
-            mand = ((seg == 2) & (npred[:, zc, :] > 0.5)).to("cpu").numpy()
-            gi = (np.clip((ct + 1.0) / 4.0, 0, 1) * 255).astype(np.uint8)        # fixed window on the z-scored CT
-            ny, nx = ct.shape
-            gih = (gi.astype(np.float32) * 0.4)                                   # DIM the CT so stacked slices never fog
-            rgba = np.zeros((ny, nx, 4), np.uint8)
-            rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool, dim context
-            rgba[..., 3] = np.where(gi > 90, 14, 0).astype(np.uint8)             # very faint CT haze → crisp, not "sfumata"
-            rgba[mand] = (255, 176, 82, 255)                                      # warm amber bone, opaque → pops, reads clean while it forms
+            si = [slice(None)] * 3; si[sax] = zc; si = tuple(si)                 # the working slab at level zc along the sweep axis
+            ct = data[0][si].to("cpu").numpy().astype(np.float32)               # (Y', X') z-scored CT
+            seg = (logits[(slice(None),) + si] / npred[si].clamp(min=1e-4)).argmax(0)
+            sel = None                                                           # union of the bone labels for THIS model
+            for _v in paint_labels:
+                m = (seg == _v); sel = m if sel is None else (sel | m)
+            mand = (sel & (npred[si] > 0.5)).to("cpu").numpy()
+            ny, nx = ct.shape                                                     # WORKING in-plane dims -> the four bbox corners come from these
+            if hi is not None:                                                    # draw on the SHARP native CT (leg), overlay the live 1.5 mm mask upsampled
+                nzi = int(round((zc + 0.5) * float(sp_w[2]) / hi["spz"] - 0.5))    # working sweep level -> native slice index (sp_w[2]=sitk-z working spacing, same box)
+                nzi = max(0, min(hi["arr"].shape[0] - 1, nzi))
+                cts = hi["arr"][nzi].astype(np.float32)                          # (Yn, Xn) native HU, crisp
+                Yn, Xn = cts.shape
+                # SMOOTH the 1.5 mm mask onto the native grid so the amber reads as clean filled bone,
+                # not hard 1.5 mm "quadretti": bilinear upsample gives a soft ramp, a light blur erases
+                # the staircase, and the amber is alpha-feathered at the edge (mf in 0..1).
+                mf = np.asarray(Image.fromarray((mand.astype(np.uint8) * 255)).resize((Xn, Yn), Image.BILINEAR)).astype(np.float32) / 255.0
+                try:
+                    from scipy.ndimage import gaussian_filter
+                    mf = gaussian_filter(mf, sigma=1.2)
+                except Exception:
+                    pass
+                mf = np.clip(mf * 1.35, 0, 1)                                    # keep the bone body solid, only the thin rim feathers
+                gi = np.clip((cts + 150.0) / 1500.0, 0, 1) * 255                 # bone-ish HU window on the real HU
+                gih = gi * 0.4
+                base = np.stack([gih * 0.80, gih * 0.88, gih], axis=-1)          # dim cool CT context
+                amber = np.array([255.0, 176.0, 82.0], np.float32)
+                a = mf[..., None]
+                rgb = (1.0 - a) * base + a * amber                              # blend amber in by the smooth mask -> no blocky edge
+                rgba = np.zeros((Yn, Xn, 4), np.uint8)
+                rgba[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+                rgba[..., 3] = np.maximum(np.where(gi > 80, 14, 0), (mf * 255)).astype(np.uint8)   # opaque bone, faint CT haze, soft rim
+            else:                                                                # head: the ~0.7 mm working CT is already sharp
+                gi = (np.clip((ct + 1.0) / 4.0, 0, 1) * 255).astype(np.uint8)    # fixed window on the z-scored CT
+                gih = (gi.astype(np.float32) * 0.4)                              # DIM the CT so stacked slices never fog
+                rgba = np.zeros((ny, nx, 4), np.uint8)
+                rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool, dim context
+                rgba[..., 3] = np.where(gi > 90, 14, 0).astype(np.uint8)         # very faint CT haze → crisp, not "sfumata"
+                rgba[mand] = (255, 176, 82, 255)                                  # warm amber bone, opaque → pops, reads clean while it forms
             im = Image.fromarray(rgba, "RGBA")
-            if im.width > 480:                                                   # crisp: 480 px is sharp on screen, still small over stderr
-                im = im.resize((480, max(1, int(480 * im.height / im.width))))
+            if im.width > 640:                                                   # crisp: 640 px keeps the slice sharp on screen
+                im = im.resize((640, max(1, int(640 * im.height / im.width))), Image.LANCZOS)
             buf = _io.BytesIO(); im.save(buf, "PNG")
-            crn = [_corner(0, 0, zc), _corner(nx - 1, 0, zc), _corner(nx - 1, ny - 1, zc), _corner(0, ny - 1, zc)]
+            crn = [_wcorner(0, 0, zc), _wcorner(0, nx - 1, zc),                  # rows=Y', cols=X'; TL,TR,BR,BL to match the texture
+                   _wcorner(ny - 1, nx - 1, zc), _wcorner(ny - 1, 0, zc)]
             cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
             log("SLICE %s %s" % (cs, _b64.b64encode(buf.getvalue()).decode()))
             state["count"] += 1
@@ -546,16 +671,26 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_back, debug_dir=None):
             log("slice preview skipped:", e)
 
     def cb(sl, data, logits, npred):
-        # logits: (C, Y', Z', X') working grid; npred weights; sl the tile slicer in working axes.
+        # logits: (C, working grid); npred weights; sl the tile slicer in working axes.
+        # sl is None => FINAL FLUSH: the window is done, so emit every remaining level (the near-edge
+        # tips whose accumulated weight never reached 0.5 during the sweep) so the bone ends show too.
+        flush = sl is None
         if state["levels"] is None:
-            nz = int(logits.shape[2])
-            state["levels"] = list(range(zstep // 2, nz, zstep))     # the Z levels we show, evenly spaced
+            nz = int(logits.shape[1 + sax])
+            step = max(zstep, int(np.ceil(nz / float(MAXSL))))       # span the WHOLE volume with <= MAXSL slices, but no denser than ~0.9 mm
+            state["levels"] = list(range(step // 2, nz, step))       # the sweep-axis levels we show, evenly spaced over the full length
         for zc in state["levels"]:                                   # emit any level now finalized, not yet shown
-            if zc in state["emitted"] or state["count"] >= 180:
+            if zc in state["emitted"]:
                 continue
-            if float(npred[:, zc, :].max()) > 0.5:                   # this slice has been segmented
-                state["emitted"].add(zc)
-                _emit(data, logits, npred, zc)
+            si = [slice(None)] * 3; si[sax] = zc; si = tuple(si)     # this sweep level, along the model's own slice axis
+            if flush:                                               # only fill tips that actually hold bone, so the head (mandible mid-crop) is untouched
+                sp = (logits[(slice(None),) + si] / npred[si].clamp(min=1e-4)).argmax(0)
+                if not any(bool((sp == _v).any()) for _v in paint_labels):
+                    continue
+            elif float(npred[si].max()) <= 0.5:                     # not yet covered enough to look clean
+                continue
+            state["emitted"].add(zc)
+            _emit(data, logits, npred, zc)
 
     return cb
 
@@ -649,11 +784,12 @@ def run_dental_nnunet(ct_nifti, work_dir):
         try:
             D = np.array(fine_img.GetDirection(), float).reshape(3, 3)
             predictor.z_ascending = bool(D[2, 2] >= 0)          # tiles bottom to top: mandible forms first
-            tb = list(predictor.plans_manager.transpose_backward)
+            tf = list(predictor.plans_manager.transpose_forward)
+            predictor.slice_axis = tf.index(0)                  # sweep along the CT long axis (=1 for DentalSegmentator)
             dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug", "segmentation")
             predictor.reveal_cb = _make_reveal(fine_img, grow_dir, predictor.configuration_manager,
-                                               tb, debug_dir=dbg)
-            log("progressive reveal on (z_ascending=%s)" % predictor.z_ascending)
+                                               tf, debug_dir=dbg)
+            log("progressive reveal on (z_ascending=%s, slice_axis=%d)" % (predictor.z_ascending, predictor.slice_axis))
         except Exception as e:
             log("reveal wiring skipped:", e)
 
@@ -699,6 +835,120 @@ def run_dental_nnunet(ct_nifti, work_dir):
     if not os.path.exists(out_path):
         raise RuntimeError("dental nnU-Net produced no output")
     log("dental output:", out_path)
+    return out_path
+
+
+def run_peripheral_nnunet(ct_nifti, work_dir):
+    """Leg path: run the MOOSE Peripheral-Bones model (Dataset666) DIRECTLY as an nnU-Net, in
+    process, so the fibula and tibia stream in LIVE per tile (the same reveal as the mandible)
+    instead of only appearing once MOOSE has finished. Returns the label map, or None to fall back
+    to MOOSE (subprocess) if the model is not present. Same weights as MOOSE, so segmentation
+    quality matches; the only change is that we drive the sliding window ourselves and reveal it."""
+    model, fold = _find_peripheral_model()
+    if not model:
+        log("peripheral model not found, falling back to MOOSE")
+        return None
+    import torch
+    from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+    from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
+    in_dir = os.path.join(work_dir, "nn_in")
+    out_dir = os.path.join(work_dir, "nn_out")
+    grow_dir = os.path.join(work_dir, "grow")
+    os.makedirs(in_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
+    # crop away the air/table around the legs (keeps both legs full length); native res, also the
+    # SHARP background for the reveal.
+    native_crop = _crop_to_bone(ct_nifti, os.path.join(work_dir, "ct_bone.nii.gz"))
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log("peripheral nnU-Net on", dev.type, "fold", fold, "(no mirroring)")
+    _args = dict(tile_step_size=0.7, use_gaussian=True, use_mirroring=False,
+                 perform_everything_on_device=(dev.type == "cuda" and False),   # GPU per tile, CPU accumulation → fits 4 GB
+                 device=dev, verbose=False, verbose_preprocessing=False, allow_tqdm=True)
+    use_fold = int(fold) if str(fold).isdigit() else fold
+    RP = _reveal_predictor_class()
+    try:
+        predictor = (RP or nnUNetPredictor)(**_args)
+        predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
+    except Exception as e:
+        log("reveal predictor init failed, using the plain one:", e)
+        RP = None
+        predictor = nnUNetPredictor(**_args)
+        predictor.initialize_from_trained_model_folder(model, use_folds=(use_fold,), checkpoint_name="checkpoint_final.pth")
+
+    # Resolution vs RAM. nnU-Net's export resamples the 32-class probability map back to the INPUT
+    # file geometry and argmaxes THERE, so peak RAM is fixed by the INPUT we feed, NOT by the working
+    # spacing — coarsening cm.spacing alone does NOT avert that OOM. So we cap RAM by resampling the
+    # INPUT: never finer than the model's native 1.5 mm, and COARSER when free RAM is tight, sized so
+    # the ~(n_cls x voxels x 2 B) export array (and its working twin) fits. A native full-leg export
+    # is ~15 GB and OOMs; 1.5 mm is ~2-3 GB.
+    sp = 1.5
+    try:
+        import psutil
+        n_cls = len(predictor.dataset_json.get("labels", {})) or 32
+        nimg = sitk.ReadImage(native_crop)
+        V = float(np.prod(np.array(nimg.GetSize(), float) * np.array(nimg.GetSpacing(), float)))   # crop volume, mm^3
+        free_gb = psutil.virtual_memory().available / 1e9
+        arr_gb = max(1.0, free_gb * 0.15)                          # budget for ONE n_cls-class array (peak stacks a few)
+        sp_fit = (n_cls * V * 2.0 / (arr_gb * 1e9)) ** (1.0 / 3.0)  # fp16 export: 2 B/elem
+        sp = float(min(2.5, max(1.5, sp_fit)))                     # >= model native 1.5 mm, cap 2.5 mm
+        if sp > 1.51:
+            log("low RAM: %.1f GB free; leg output coarsened to %.2f mm iso" % (free_gb, sp))
+    except Exception as e:
+        log("RAM sizing skipped, using 1.5 mm:", e)
+
+    cropped = _resample_to_spacing(native_crop, os.path.join(work_dir, "ct_bone_15.nii.gz"), sp_mm=sp)
+    crop_img = fine_img = sitk.ReadImage(cropped)
+    fine_nifti = cropped
+    try:
+        predictor.configuration_manager.configuration["spacing"] = [sp, sp, sp]   # working grid == input grid: no re-sampling either way
+    except Exception as e:
+        log("set working spacing skipped:", e)
+    shutil.copyfile(fine_nifti, os.path.join(in_dir, "CASE_0000.nii.gz"))
+    try:
+        est_gb = float(np.prod(np.array(fine_img.GetSize(), float)) * (len(predictor.dataset_json.get("labels", {})) or 32) * 2 / 1e9)
+        log("leg input %s at %.2f mm, export map ~%.1f GB" % (fine_img.GetSize(), sp, est_gb))
+    except Exception:
+        pass
+
+    # Wire the live reveal, painting the donor bones (fibula L/R = 7/8, tibia L/R = 26/27). Guarded:
+    # any failure just means the leg bones appear once at the end instead of streaming.
+    if RP is not None and isinstance(predictor, RP):
+        try:
+            D = np.array(fine_img.GetDirection(), float).reshape(3, 3)
+            predictor.z_ascending = bool(D[2, 2] >= 0)
+            tf = list(predictor.plans_manager.transpose_forward)
+            predictor.slice_axis = tf.index(0)                  # sweep along the leg's long axis (=0 for Peripheral-Bones)
+            dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug", "segmentation")
+            predictor.reveal_cb = _make_reveal(fine_img, grow_dir, predictor.configuration_manager,
+                                               tf, debug_dir=dbg, paint_labels=(7, 8, 26, 27),
+                                               hires_ct_path=native_crop)   # draw the reveal on the SHARP native CT, not the 1.5 mm working grid
+            log("progressive reveal on (z_ascending=%s, slice_axis=%d)" % (predictor.z_ascending, predictor.slice_axis))
+        except Exception as e:
+            log("reveal wiring skipped:", e)
+
+    log("PHASE preparing the model")
+
+    out_path = os.path.join(out_dir, "CASE.nii.gz")
+    io = SimpleITKIO()
+    try:
+        img, props = io.read_images([os.path.join(in_dir, "CASE_0000.nii.gz")])
+        seg = predictor.predict_single_npy_array(img, props, None, None, False)   # (z,y,x) at fine geometry
+        io.write_seg(seg, out_path, props)
+    except Exception as e:
+        raise RuntimeError("LOW_MEMORY: not enough free RAM to segment this leg at full "
+                           "resolution. Close other apps (the browser especially) to free "
+                           "memory, then try again. (%s)" % e)
+    finally:
+        try:
+            del predictor
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+    if not os.path.exists(out_path):
+        raise RuntimeError("peripheral nnU-Net produced no output")
+    log("peripheral output:", out_path)
     return out_path
 
 
@@ -921,11 +1171,21 @@ def segment(dicom_folder, series_id, region, work_dir):
         # direct DentalSegmentator (fast, shows a percentage); MOOSE is the fallback
         label_nii = run_dental_nnunet(nifti, work_dir) or run_moose(nifti, cfg["moose_model"], work_dir)
     else:
-        label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
-        try:                                     # MOOSE gives no live hook → replay the leg slices so it forms in 3D like the head
-            emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
+        # direct Peripheral-Bones nnU-Net (fibula+tibia stream in LIVE per tile, like the mandible).
+        # MOOSE is the fallback for ANY in-process failure, not just a missing model: MOOSE is a
+        # separate subprocess with a lighter footprint (no reveal, no native-CT array), so it can
+        # succeed where the in-process run hit a snag. On fallback we replay the slices post-hoc.
+        label_nii = None
+        try:
+            label_nii = run_peripheral_nnunet(nifti, work_dir)
         except Exception as e:
-            log("leg reveal skipped:", e)
+            log("direct leg nnU-Net failed, falling back to MOOSE:", e)
+        if label_nii is None:
+            label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+            try:                                 # MOOSE gives no live hook → replay the leg slices so it forms in 3D
+                emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
+            except Exception as e:
+                log("leg reveal skipped:", e)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
     stls = labels_to_stls(label_nii, cfg, stl_dir)

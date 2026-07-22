@@ -4494,7 +4494,7 @@ function _sliceDrainTick(){                    // reveal ONE queued slice at a t
   _sliceDrain=setTimeout(_sliceDrainTick, iv);
 }
 function segSlice(cornersStr,b64){
-  if(segState.region!=='head' && segState.region!=='leg') return;   // reveal for BOTH the head (nnU-Net) and the leg (MOOSE replay)
+  if(segState.region!=='head' && segState.region!=='leg') return;   // live reveal for BOTH the head (dental nnU-Net) and the leg (peripheral nnU-Net)
   if(!renderer){ initGL(); loop(); }
   if(!modelPivot) return;
   const c=cornersStr.split(';').map(function(s){return s.split(',').map(Number);});
@@ -4661,7 +4661,7 @@ function segShowStl(name, path){
   $('segStatus').textContent=name+' ready';
   if(name==='MandibularCanal'){ segShowCanal(path); return; }   // nerve overlay, not the bone path
   if(name==='Skull'){ segShowSkull(path); return; }             // translucent context around the mandible
-  if(segState.region==='leg') return;                           // the leg loads ONLY at the end (segLoadResult) so the reveal keeps sweeping (the fibula STL is ready seconds after MOOSE, which would otherwise cut it short)
+  if(segState.region==='leg') return;                           // the leg loads ONLY at the end (segLoadResult) so the live reveal keeps sweeping (the fibula STL is ready seconds after inference, which would otherwise cut it short)
   const primary = (segState.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
   if(name!==primary) return;                 // load the main bone live so it appears in 3D
   segClearGrow(false);                        // drop the preview; the real mesh loads next, no demo flash

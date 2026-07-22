@@ -340,19 +340,33 @@ class Backend(QObject):
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         proc.setProcessEnvironment(env)
-        buf = {"out": b""}
+        buf = {"out": b"", "err": b""}
 
         def on_out():
             buf["out"] += bytes(proc.readAllStandardOutput())
 
-        def on_err():
-            txt = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
-            for ln in txt.replace("\r", "\n").splitlines():
-                ln = ln.strip()
+        def _emit_err_lines(final=False):
+            # A single reveal SLICE line (sharp native-CT PNG, base64) is far larger than the OS pipe
+            # buffer, so QProcess delivers it across several reads. Accumulate and emit only COMPLETE
+            # (newline-terminated) lines, keeping the trailing partial for the next read; otherwise a
+            # long SLICE gets chopped into a truncated line + orphan tail and the UI silently drops it
+            # (patchy leg reveal). On finish, flush whatever remains.
+            data = buf["err"].replace(b"\r", b"\n")
+            parts = data.split(b"\n")
+            rest = b"" if final else parts.pop()          # last piece has no newline yet: hold it back (unless final)
+            buf["err"] = rest
+            for lb in parts:
+                ln = lb.decode("utf-8", "replace").strip()
                 if ln:
                     self.segEvent.emit(json.dumps({"kind": "progress", "cmd": cmd_tag, "text": ln}))
 
+        def on_err():
+            buf["err"] += bytes(proc.readAllStandardError())
+            _emit_err_lines()
+
         def on_fin(code, _status):
+            buf["err"] += bytes(proc.readAllStandardError())   # drain any tail QProcess still holds
+            _emit_err_lines(final=True)
             out = buf["out"].decode("utf-8", "replace")
             line = ""
             for ln in out.splitlines():
