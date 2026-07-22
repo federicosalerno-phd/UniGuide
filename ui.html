@@ -4749,16 +4749,21 @@ function segLoadResult(r){
   const path=stls[key];
   if(!path){ segLog('No '+key+' produced. Parts: '+Object.keys(stls).join(', ')); $('segStatus').textContent='no '+key; segClearGrow(false); return; }
   const camBefore={tgt:orbit.tgt.clone(), r:orbit.r};          // the reveal framing → the camera glides FROM here to the finished mesh
+  const hadReveal=!!_sliceGroup;                               // a live reveal to hand off from (leg). The head already loaded its mandible live via STL_READY, so its reveal is already gone → no crossfade (no double-fade glitch).
   B.seg_read_stl(path, function(s){
     let d={}; try{d=JSON.parse(s);}catch(x){}
     if(d.error){ segLog('Load failed: '+d.error); segClearGrow(false); return; }
     ingest(d.positions, key);                                  // builds the finished mesh (small STL → cheap)
     const finalMesh=(r.region==='head') ? boneMesh : fibulaMesh;
-    // move the reveal (world coords) onto the finished mesh's display frame so the fade reads as a morph
-    let revOffset=null;
-    if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }
-    else if(r.region==='leg' && window._fibulaOffset){ const o=window._fibulaOffset; revOffset=new THREE.Vector3(-o.ctr.x, -o.ctr.y-o.dy, -o.ctr.z); }
-    _crossfadeReveal(finalMesh, revOffset, camBefore, _fitParams(finalMesh));   // gradual, non-blocking hand-off
+    if(hadReveal){
+      // move the reveal (world coords) onto the finished mesh's display frame so the fade reads as a morph
+      let revOffset=null;
+      if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }
+      else if(r.region==='leg' && window._fibulaOffset){ const o=window._fibulaOffset; revOffset=new THREE.Vector3(-o.ctr.x, -o.ctr.y-o.dy, -o.ctr.z); }
+      _crossfadeReveal(finalMesh, revOffset, camBefore, _fitParams(finalMesh));   // gradual, non-blocking hand-off
+    } else {                                                   // already shown live (head) → just settle the view, no re-fade
+      const fit=_fitParams(finalMesh); if(fit){ orbit.tgt.copy(fit.tgt); orbit.r=fit.r; orbit.min=fit.min; orbit.max=fit.max; applyOrbit(); }
+    }
     // Defer the secondary overlays + reframe across frames so nothing piles into one turn (no freeze).
     const tasks=[];
     if(r.region==='leg'){
