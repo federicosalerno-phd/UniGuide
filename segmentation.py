@@ -346,11 +346,11 @@ def _live_ct_sweep(ct_nifti, stop_ev, step_mm=1.4, target_px=440, pace_s=1.4):
             if stop_ev.is_set():
                 return
             gi = (np.clip((ct[zi] + 150.0) / 1500.0, 0, 1) * 255).astype(np.uint8)   # bone-ish window
-            gih = gi.astype(np.float32) * 0.4
+            gih = gi.astype(np.float32) * 0.62                          # brighter, visible context (was too dark)
             rgba = np.zeros((ny, nx, 4), np.uint8)
-            rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)
-            rgba[..., 3] = np.where(gi > 80, 14, 0).astype(np.uint8)
-            rgba[bone[zi]] = (255, 176, 82, 255)                        # warm amber bone forming, live
+            rgba[..., 0] = (gih * 0.82).astype(np.uint8); rgba[..., 1] = (gih * 0.90).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)
+            rgba[..., 3] = np.where(gi > 55, 42, 0).astype(np.uint8)
+            rgba[bone[zi]] = (255, 186, 88, 255)                        # bold warm amber bone forming, live
             im = Image.fromarray(rgba, "RGBA")
             if im.width > target_px:
                 im = im.resize((target_px, max(1, int(target_px * im.height / im.width))), Image.LANCZOS)
@@ -695,11 +695,11 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_forward, debug_dir=None, pain
                 rgba[..., 3] = np.maximum(np.where(gi > 80, 14, 0), (mf * 255)).astype(np.uint8)   # opaque bone, faint CT haze, soft rim
             else:                                                                # head: the ~0.7 mm working CT is already sharp
                 gi = (np.clip((ct + 1.0) / 4.0, 0, 1) * 255).astype(np.uint8)    # fixed window on the z-scored CT
-                gih = (gi.astype(np.float32) * 0.4)                              # DIM the CT so stacked slices never fog
+                gih = (gi.astype(np.float32) * 0.62)                             # brighter context so the head reads clearly, still below fogging
                 rgba = np.zeros((ny, nx, 4), np.uint8)
-                rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool, dim context
-                rgba[..., 3] = np.where(gi > 90, 14, 0).astype(np.uint8)         # very faint CT haze → crisp, not "sfumata"
-                rgba[mand] = (255, 176, 82, 255)                                  # warm amber bone, opaque → pops, reads clean while it forms
+                rgba[..., 0] = (gih * 0.82).astype(np.uint8); rgba[..., 1] = (gih * 0.90).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool but VISIBLE context
+                rgba[..., 3] = np.where(gi > 55, 42, 0).astype(np.uint8)         # visible CT haze, not "quasi invisibile"
+                rgba[mand] = (255, 186, 88, 255)                                  # bold warm amber bone, opaque → the mandible pops as it forms
             im = Image.fromarray(rgba, "RGBA")
             if im.width > 640:                                                   # crisp: 640 px keeps the slice sharp on screen
                 im = im.resize((640, max(1, int(640 * im.height / im.width))), Image.LANCZOS)
@@ -1024,7 +1024,7 @@ def constrain_to(mask, host_mask, spacing, dilate_mm=4.0):
     return mask & host_d
 
 
-def mask_to_mesh(mask, img, smooth_iter=10, presmooth=0.0):
+def mask_to_mesh(mask, img, smooth_iter=10, presmooth=0.0, decimate_faces=0):
     """Marching-cubes a binary mask into a Trimesh in the image physical frame.
 
     ``presmooth`` gaussian-blurs the mask BEFORE marching cubes (voxel units). MOOSE resamples the
@@ -1069,6 +1069,15 @@ def mask_to_mesh(mask, img, smooth_iter=10, presmooth=0.0):
         pass
     if smooth_iter > 0:
         trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=-0.53, iterations=smooth_iter)
+    # Decimate so the browser builds it instantly (quadric simplification preserves the shape; verified
+    # sub-mm vs the raw mesh). Guarded: if the lib is missing the mesh just stays full-res.
+    if decimate_faces and len(mesh.faces) > int(decimate_faces * 1.15):
+        try:
+            import fast_simplification as _fs
+            v, f = _fs.simplify(mesh.vertices.astype(np.float32), mesh.faces, target_count=int(decimate_faces))
+            mesh = trimesh.Trimesh(v, f, process=False)
+        except Exception as e:
+            log("decimation skipped:", e)
     return mesh
 
 
@@ -1135,7 +1144,12 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
                 ps, si = 0.0, 8
             else:                                    # mandible / skull: gentle anti-alias, keep the detail
                 ps, si = 0.6, 12
-            mesh = mask_to_mesh(mask, img, smooth_iter=si, presmooth=ps)
+            # Cap the triangle count so the BROWSER builds the mesh instantly. A raw skull/mandible is
+            # 150k-500k faces, whose JSON parse + computeVertexNormals froze the UI for seconds ("not
+            # responding") before the model popped in. The skull is a translucent reference so it can be
+            # light; the bones keep plenty of triangles to stay sub-mm smooth.
+            dec = 20000 if "skull" in nm else (55000 if ("mandible" in nm or "fibula" in nm or "tibia" in nm) else 0)
+            mesh = mask_to_mesh(mask, img, smooth_iter=si, presmooth=ps, decimate_faces=dec)
             if mesh is None:
                 log("label", lab, name, "too small after cleanup"); continue
             path = os.path.join(out_dir, name + ".stl")
