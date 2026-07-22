@@ -4752,10 +4752,11 @@ function segLoadResult(r){
     ingest(d.positions, key);                                  // builds the finished mesh (small STL → cheap)
     const finalMesh=(r.region==='head') ? boneMesh : fibulaMesh;
     if(hadReveal){
-      // move the reveal (world coords) onto the finished mesh's display frame so the fade reads as a morph
+      // head: overlap the reveal onto the centered mandible so the fade reads as an in-place morph.
+      // leg: the reveal is the whole-leg CT "forming" placeholder at world coords, so leave it in place
+      // and let the camera glide to the donor fibula while it dissolves (a smooth fly-to-the-result).
       let revOffset=null;
       if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }
-      else if(r.region==='leg' && window._fibulaOffset){ const o=window._fibulaOffset; revOffset=new THREE.Vector3(-o.ctr.x, -o.ctr.y-o.dy, -o.ctr.z); }
       _crossfadeReveal(finalMesh, revOffset, camBefore, _fitParams(finalMesh));   // gradual, non-blocking hand-off
     } else {                                                   // already shown live (head) → just settle the view, no re-fade
       const fit=_fitParams(finalMesh); if(fit){ orbit.tgt.copy(fit.tgt); orbit.r=fit.r; orbit.min=fit.min; orbit.max=fit.max; applyOrbit(); }

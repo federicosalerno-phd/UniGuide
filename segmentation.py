@@ -317,6 +317,53 @@ def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=
         log("SLICE %s %s" % (cs, _b64.b64encode(buf.getvalue()).decode()))
 
 
+def _live_ct_sweep(ct_nifti, stop_ev, step_mm=1.4, target_px=440, pace_s=1.4):
+    """LEG: while MOOSE segments (a blocking subprocess with NO per-tile hook) the user would stare at
+    a bar for minutes. So stream a live "forming" animation, like the mandible reveal: sweep the CT long
+    axis and paint the dense bone (HU threshold) amber, emitting SLICE events paced by pace_s until MOOSE
+    finishes (stop_ev). It is a PLACEHOLDER straight from the CT (all leg bones), not the segmentation;
+    the impeccable MOOSE fibula/tibia replace it at the end via the UI crossfade. Runs in a daemon thread
+    alongside run_moose; the SLICE lines share stderr with MOOSE, so a rare byte collision just drops one
+    placeholder slice (harmless). Fully guarded: any failure just means the bar shows instead."""
+    try:
+        from PIL import Image
+        import io as _io, base64 as _b64
+        ct_img = sitk.ReadImage(ct_nifti)
+        ct = sitk.GetArrayFromImage(ct_img).astype(np.float32)          # (z,y,x) HU
+        nz, ny, nx = ct.shape
+        bone = ct > 300.0                                               # dense (mostly cortical) bone; avoids most soft tissue/contrast
+        zstep = max(1, int(round(step_mm / float(ct_img.GetSpacing()[2]))))
+        zs = [z for z in range(0, nz, zstep) if bool(bone[z].any())]
+        if not zs:
+            return
+        if len(zs) > 200:
+            zs = [zs[i] for i in np.linspace(0, len(zs) - 1, 200).astype(int)]
+
+        def _corner(x, y, z):
+            return ct_img.TransformContinuousIndexToPhysicalPoint([float(x), float(y), float(z)])
+
+        for zi in zs:
+            if stop_ev.is_set():
+                return
+            gi = (np.clip((ct[zi] + 150.0) / 1500.0, 0, 1) * 255).astype(np.uint8)   # bone-ish window
+            gih = gi.astype(np.float32) * 0.4
+            rgba = np.zeros((ny, nx, 4), np.uint8)
+            rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)
+            rgba[..., 3] = np.where(gi > 80, 14, 0).astype(np.uint8)
+            rgba[bone[zi]] = (255, 176, 82, 255)                        # warm amber bone forming, live
+            im = Image.fromarray(rgba, "RGBA")
+            if im.width > target_px:
+                im = im.resize((target_px, max(1, int(target_px * im.height / im.width))), Image.LANCZOS)
+            buf = _io.BytesIO(); im.save(buf, "PNG")
+            crn = [_corner(0, 0, zi), _corner(nx - 1, 0, zi), _corner(nx - 1, ny - 1, zi), _corner(0, ny - 1, zi)]
+            cs = ";".join("%.2f,%.2f,%.2f" % (p[0], p[1], p[2]) for p in crn)
+            log("SLICE %s %s" % (cs, _b64.b64encode(buf.getvalue()).decode()))
+            if stop_ev.wait(pace_s):                                    # pace the build; wake instantly when MOOSE finishes
+                return
+    except Exception as e:
+        log("live ct sweep skipped:", e)
+
+
 def _find_dental_model():
     """Locate the DentalSegmentator (Dataset112) 3d_fullres trainer folder and the fold that
     actually has a checkpoint. Returns (trainer_folder, fold) or (None, None). MOOSE ships the
@@ -1180,11 +1227,17 @@ def segment(dicom_folder, series_id, region, work_dir):
         # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
         # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
         # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
-        label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
-        try:                                     # MOOSE gives no live hook → replay the leg slices so it forms in 3D
-            emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
-        except Exception as e:
-            log("leg reveal skipped:", e)
+        # Stream a LIVE "forming" animation from the CT while MOOSE segments (it has no per-tile hook),
+        # so the leg builds up in real time like the mandible. The impeccable MOOSE fibula/tibia replace
+        # the placeholder at the end (UI crossfade).
+        import threading
+        _stop = threading.Event()
+        _sweeper = threading.Thread(target=_live_ct_sweep, args=(nifti, _stop), daemon=True)
+        _sweeper.start()
+        try:
+            label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+        finally:
+            _stop.set(); _sweeper.join(timeout=3)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
     stls = labels_to_stls(label_nii, cfg, stl_dir)
