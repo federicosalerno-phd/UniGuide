@@ -1148,7 +1148,7 @@ def labels_to_stls(label_nii, region_cfg, out_dir):
             # 150k-500k faces, whose JSON parse + computeVertexNormals froze the UI for seconds ("not
             # responding") before the model popped in. The skull is a translucent reference so it can be
             # light; the bones keep plenty of triangles to stay sub-mm smooth.
-            dec = 20000 if "skull" in nm else (55000 if ("mandible" in nm or "fibula" in nm or "tibia" in nm) else 0)
+            dec = 60000 if "skull" in nm else (85000 if ("mandible" in nm or "fibula" in nm or "tibia" in nm) else 0)
             mesh = mask_to_mesh(mask, img, smooth_iter=si, presmooth=ps, decimate_faces=dec)
             if mesh is None:
                 log("label", lab, name, "too small after cleanup"); continue
