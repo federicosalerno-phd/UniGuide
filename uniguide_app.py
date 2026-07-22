@@ -448,7 +448,10 @@ class Backend(QObject):
 
     @pyqtSlot(str, result=str)
     def seg_read_stl(self, path):
-        """Parse an STL the segmentation produced (absolute path in the work dir)."""
+        """Parse an STL the segmentation produced and return its triangle-soup positions as base64
+        float32. A raw JSON array of ~750k numbers is a ~10 MB string the browser must JSON.parse
+        (hundreds of ms of frozen UI right before the model appeared, which read as an abrupt pop);
+        the compact binary decodes in ~50 ms so the finished model can GROW in smoothly instead."""
         p = Path(path)
         if not p.exists():
             return json.dumps({"error": "not found: " + path})
@@ -456,7 +459,9 @@ class Backend(QObject):
             pos = _parse_stl(str(p))
         except Exception as e:
             return json.dumps({"error": str(e)})
-        return json.dumps({"name": p.name, "positions": pos, "count": len(pos) // 9})
+        import numpy as _np, base64 as _b64
+        b = _b64.b64encode(_np.asarray(pos, dtype=_np.float32).tobytes()).decode("ascii")
+        return json.dumps({"name": p.name, "b64": b, "count": len(pos) // 9})
 
     # ------------------------------------------------------------ mask editing
     # Hand-correct or draw the segmentation on axial/coronal/sagittal slices. The CT

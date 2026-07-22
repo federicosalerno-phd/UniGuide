@@ -4547,6 +4547,10 @@ function _disposeGroupChunked(grp){        // ~10 slices/frame → the GPU textu
 function _deferChain(tasks){                // one task per frame → heavy secondary loads never pile into one turn
   let i=0; (function step(){ if(i>=tasks.length)return; try{tasks[i]();}catch(e){console.warn('defer',e);} i++; requestAnimationFrame(step); })();
 }
+function _decodeStl(d){                      // seg_read_stl now sends float32 as base64 → decode fast (no giant JSON.parse freeze)
+  if(d&&d.b64&&!d.positions){ const bin=atob(d.b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); d.positions=new Float32Array(u.buffer); }
+  return d;
+}
 function _crossfadeReveal(finalMesh, revOffset, startCam, fit){
   if(_xfadeRaf){ cancelAnimationFrame(_xfadeRaf); _xfadeRaf=0; }
   const rev=_sliceGroup; _sliceGroup=null;                        // detach so a new Start can't touch it mid-fade
@@ -4578,7 +4582,7 @@ function _crossfadeReveal(finalMesh, revOffset, startCam, fit){
 }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
+  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){return;}
     if(!d||d.error||!d.positions||d.positions.length<9) return;
     if(!modelPivot) return;
     if(window._canalMesh) disposeMesh(window._canalMesh);
@@ -4643,7 +4647,7 @@ function onSegEvent(s){
     else if(e.kind==='done'){
       $('edRemeshBtn').disabled=false; let r={}; try{r=JSON.parse(e.result);}catch(x){}
       if(r&&r.ok&&r.stl){ $('edStatus').textContent='loaded';
-        B.seg_read_stl(r.stl, function(t){ let d={}; try{d=JSON.parse(t);}catch(x){}
+        B.seg_read_stl(r.stl, function(t){ let d={}; try{d=_decodeStl(JSON.parse(t));}catch(x){}
           if(d.error){ $('edStatus').textContent='load failed'; return; }
           const nm=edState.remeshName||'edited';
           if(/tumour|tumor/i.test(nm)){ ingestTeeth(d.positions,nm); toast('Tumour loaded as a reference. It rides the mandible and shows in the Planes step so you can mark the red extent around the real mass.'); }
@@ -4719,7 +4723,7 @@ function segShowStl(name, path){
 }
 function segShowSkull(path){                                    // translucent skull, so it is clearly a head
   if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
+  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){return;}
     if(!d||d.error||!d.positions||d.positions.length<9) return;
     if(!modelPivot) return;
     if(window._skullMesh) disposeMesh(window._skullMesh);
@@ -4735,7 +4739,7 @@ function segShowSkull(path){                                    // translucent s
 }
 function segShowTibia(path){                                    // translucent tibia = the LEG reference (like the skull for the head), aligned to the fibula's display frame
   if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=JSON.parse(s);}catch(x){return;}
+  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){return;}
     if(!d||d.error||!d.positions||d.positions.length<9) return;
     if(window._tibiaMesh) disposeMesh(window._tibiaMesh);
     const off=window._fibulaOffset||{ctr:new THREE.Vector3(),dy:300};
@@ -4757,7 +4761,7 @@ function segLoadResult(r){
   const camBefore={tgt:orbit.tgt.clone(), r:orbit.r};          // the reveal framing → the camera glides FROM here to the finished mesh
   const hadReveal=!!_sliceGroup;                               // a live reveal to hand off from (leg). The head already loaded its mandible live via STL_READY, so its reveal is already gone → no crossfade (no double-fade glitch).
   B.seg_read_stl(path, function(s){
-    let d={}; try{d=JSON.parse(s);}catch(x){}
+    let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){}
     if(d.error){ segLog('Load failed: '+d.error); segClearGrow(false); return; }
     ingest(d.positions, key);                                  // builds the finished mesh (small STL → cheap)
     const finalMesh=(r.region==='head') ? boneMesh : fibulaMesh;
