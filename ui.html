@@ -4700,16 +4700,12 @@ function onSegEvent(s){
   }
 }
 function segShowStl(name, path){
+  // STL_READY only marks readiness now. EVERYTHING (mandible / fibula, plus skull / tibia / canal)
+  // loads ONCE at the very end in segLoadResult through the smooth, non-blocking CROSSFADE. Loading
+  // the mandible here mid-reveal did a SYNCHRONOUS dispose of the ~128 reveal textures + a mesh build
+  // in a single turn, which froze the whole UI (drag, rotate, and the spinner all stalled). Deferring
+  // it to segLoadResult keeps the reveal sweeping and hands off with no freeze and no hard cut.
   $('segStatus').textContent=name+' ready';
-  if(name==='MandibularCanal'){ segShowCanal(path); return; }   // nerve overlay, not the bone path
-  if(name==='Skull'){ segShowSkull(path); return; }             // translucent context around the mandible
-  if(segState.region==='leg') return;                           // the leg loads ONLY at the end (segLoadResult) so the live reveal keeps sweeping (the fibula STL is ready seconds after inference, which would otherwise cut it short)
-  const primary = (segState.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
-  if(name!==primary) return;                 // load the main bone live so it appears in 3D
-  segClearGrow(false);                        // drop the preview; the real mesh loads next, no demo flash
-  B.seg_read_stl(path, function(s){ let d={}; try{d=JSON.parse(s);}catch(x){}
-    if(!d||d.error)return;
-    if(segState.region==='head') ingestModel(d.positions,name); else ingestFibula(d.positions,name); });
 }
 function segShowSkull(path){                                    // translucent skull, so it is clearly a head
   if(!(B&&B.seg_read_stl)) return;
