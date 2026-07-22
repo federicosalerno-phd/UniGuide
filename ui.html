@@ -4472,6 +4472,7 @@ function segSliceAnim(){ if(!_sliceGroup){ _sliceAnim=0; return; }
   const now=performance.now()/1000;
   _sliceGroup.children.forEach(function(m){ m.material.opacity=Math.max(0,Math.min(1,(now-(m.userData.spawn||now))/0.25)); });
   invalidate(); _sliceAnim=requestAnimationFrame(segSliceAnim); }
+function segSubject(){ return segState.region==='leg' ? 'the fibula and tibia' : 'the mandible'; }   // region-aware wording for the live status text
 function _sliceReveal(it){                    // add ONE slice plane at its world corners, fade it in
   if(!_sliceGroup) return;
   const c=it.c, tex=new THREE.Texture(it.img);
@@ -4485,7 +4486,7 @@ function _sliceReveal(it){                    // add ONE slice plane at its worl
   _sliceGroup.add(mesh); _sliceN++;
   if(_sliceN===2) fitObject(_sliceGroup);
   if($('stTri'))$('stTri').textContent=_sliceN+' slices';
-  $('segStatus').textContent='scanning the mandible';
+  $('segStatus').textContent='scanning '+segSubject();
 }
 function _sliceDrainTick(){                    // reveal ONE queued slice at a time, spread over the wait
   if(!_sliceGroup){ _sliceDrain=0; return; }
@@ -4525,6 +4526,46 @@ function segClearGrow(restoreDemo){ if(_sliceAnim){ cancelAnimationFrame(_sliceA
   _sliceN=0;
   if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false;
   if(segState.region==='leg'){ if(boneMesh)boneMesh.visible=true; if(window._canalMesh)window._canalMesh.visible=true; if(window._skullMesh)window._skullMesh.visible=true; }   // leg reveal only HID the mandible/head work → bring it back
+}
+// ── smooth, non-blocking hand-off from the live reveal to the finished mesh ─────────────────
+// The old path disposed all ~128 reveal textures AND built + reframed the mesh in ONE turn, which
+// froze the main thread (no drag, the spinner stalled), then swapped in the mesh with a hard cut.
+// Instead: fade the finished mesh IN as the reveal fades OUT, glide the camera to it, and dispose
+// the reveal textures a few per frame + defer the secondary overlays across frames — nothing blocks.
+let _xfadeRaf=0;
+function _sliceFreeze(){ if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[]; }   // stop adding slices, keep the group on screen
+function _matsOf(m){ return m?(Array.isArray(m.material)?m.material:[m.material]):[]; }
+function _fitParams(obj){ if(!obj)return null; obj.updateWorldMatrix(true,true);
+  const box=new THREE.Box3().setFromObject(obj); if(box.isEmpty())return null;
+  const sph=new THREE.Sphere(); box.getBoundingSphere(sph);
+  return {tgt:sph.center.clone(), r:sph.radius*2.7, min:sph.radius*0.35, max:sph.radius*12}; }
+function _disposeGroupChunked(grp){        // ~10 slices/frame → the GPU texture deletes never block a frame
+  if(!grp) return; const kids=grp.children.slice(); let i=0;
+  (function step(){ for(let n=0;i<kids.length&&n<10;n++,i++){ const o=kids[i]; if(o.material){ if(o.material.map)o.material.map.dispose(); o.material.dispose(); } if(o.geometry)o.geometry.dispose(); }
+    if(i<kids.length) requestAnimationFrame(step); else { if(grp.parent)grp.parent.remove(grp); invalidate(); } })();
+}
+function _deferChain(tasks){                // one task per frame → heavy secondary loads never pile into one turn
+  let i=0; (function step(){ if(i>=tasks.length)return; try{tasks[i]();}catch(e){console.warn('defer',e);} i++; requestAnimationFrame(step); })();
+}
+function _crossfadeReveal(finalMesh, revOffset, startCam, fit){
+  if(_xfadeRaf){ cancelAnimationFrame(_xfadeRaf); _xfadeRaf=0; }
+  const rev=_sliceGroup; _sliceGroup=null;                        // detach so a new Start can't touch it mid-fade
+  if(_sliceAnim){ cancelAnimationFrame(_sliceAnim); _sliceAnim=0; }
+  if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[]; _sliceN=0;
+  if(rev && revOffset) rev.position.copy(revOffset);             // overlap the finished mesh so it reads as a morph, not two separate things
+  const revBase = rev? rev.children.map(m=>m.material.opacity) : [];
+  const mats=_matsOf(finalMesh); mats.forEach(function(m){ m._wasTransp=m.transparent; m._wasDW=m.depthWrite; m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; });
+  if(startCam){ orbit.tgt.copy(startCam.tgt); orbit.r=startCam.r; }   // begin from the reveal framing (ingest may have snapped it)
+  const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=750;
+  (function tick(){
+    const t=Math.min(1,(performance.now()-t0)/dur), e=t*t*(3-2*t);
+    mats.forEach(function(m){ m.opacity=e; });
+    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });
+    if(fit){ orbit.tgt.lerpVectors(sTgt,fit.tgt,e); orbit.r=sR+(fit.r-sR)*e; if(fit.min){orbit.min=fit.min;orbit.max=fit.max;} applyOrbit(); }
+    invalidate();
+    if(t<1){ _xfadeRaf=requestAnimationFrame(tick); }
+    else { _xfadeRaf=0; mats.forEach(function(m){ m.opacity=1; m.transparent=!!m._wasTransp; m.depthWrite=(m._wasDW!==false); m.needsUpdate=true; }); _disposeGroupChunked(rev); }
+  })();
 }
 function segShowCanal(path){
   if(!(B&&B.seg_read_stl)) return;
@@ -4640,20 +4681,21 @@ function onSegEvent(s){
       const ph=e.text.match(/\bPHASE (.+)/);
       if(ph){ $('segStatus').textContent=ph[1].trim(); return; }
       let m=e.text.match(/(\d+)\/(\d+)\s*\[/);           // tqdm tile counter -> smooth 5..85%
-      if(m){ const p=100*(+m[1])/(+m[2]); segProg(Math.min(85,5+0.8*p)); $('segStatus').textContent=(p>=100?'finishing, building the mandible':'segmenting '+Math.round(p)+'%'); return; }
+      if(m){ const p=100*(+m[1])/(+m[2]); segProg(Math.min(85,5+0.8*p)); $('segStatus').textContent=(p>=100?'finishing, building '+segSubject():'segmenting '+Math.round(p)+'%'); return; }
       m=e.text.match(/copying:\s*(\d+)\/(\d+)/i);
       if(m){ const p=Math.round(100*(+m[1])/(+m[2])); $('segStatus').textContent='copying the scan '+p+'%'; segProg(p*0.05); return; }
       if(/Predicting|preprocess/i.test(e.text)){ $('segStatus').textContent='preparing the model'; return; }
     }
     else if(e.kind==='error'){ segState.running=false; $('segStartBtn').disabled=false; segBusy(false); segAnimReset(); segClearGrow(true); $('segStatus').textContent='error'; segLog('ERROR: '+(e.error||'')); }
     else if(e.kind==='done'){
-      segState.running=false; $('segStartBtn').disabled=false; segProg(100); segClearGrow(false); segBusy(false);
+      segState.running=false; $('segStartBtn').disabled=false; segProg(100); segBusy(false);
+      _sliceFreeze();                            // stop adding slices but KEEP the reveal on screen for the crossfade
       let r={}; try{r=JSON.parse(e.result);}catch(x){}
-      if(!r||!r.ok){ const em=(r&&r.error)||'no result';
+      if(!r||!r.ok){ segClearGrow(true); const em=(r&&r.error)||'no result';
         if(/LOW_MEMORY|RAM|out of memory|workers died/i.test(em)){ $('segStatus').textContent='not enough free memory'; segLog('Not enough free RAM for this scan at full resolution. Close other apps, the browser especially, then try again. You have plenty of RAM total, it is just busy right now.'); }
         else { $('segStatus').textContent='failed'; segLog('FAILED: '+em); }
         return; }
-      $('segStatus').textContent='done, loading mesh'; segLoadResult(r);
+      $('segStatus').textContent='done, loading '+segSubject(); segLoadResult(r);
     }
   }
 }
@@ -4705,24 +4747,33 @@ function segLoadResult(r){
   const key = (r.region==='head') ? 'Mandible' : ('Fibula_'+segState.side);
   const ingest = (r.region==='head') ? ingestModel : ingestFibula;
   const path=stls[key];
-  if(!path){ segLog('No '+key+' produced. Parts: '+Object.keys(stls).join(', ')); $('segStatus').textContent='no '+key; return; }
+  if(!path){ segLog('No '+key+' produced. Parts: '+Object.keys(stls).join(', ')); $('segStatus').textContent='no '+key; segClearGrow(false); return; }
+  const camBefore={tgt:orbit.tgt.clone(), r:orbit.r};          // the reveal framing → the camera glides FROM here to the finished mesh
   B.seg_read_stl(path, function(s){
     let d={}; try{d=JSON.parse(s);}catch(x){}
-    if(d.error){ segLog('Load failed: '+d.error); return; }
-    ingest(d.positions, key);
-    // ingestModel just re-centered the mandible (and cleared any old canal), so re-add the nerve
-    // canal aligned to it. Without this the redundant final ingest would leave the canal gone.
-    if(r.region==='head' && stls['MandibularCanal']) segShowCanal(stls['MandibularCanal']);
-    if(r.region==='head' && stls['Skull']) segShowSkull(stls['Skull']);
-    if(r.region==='leg'){ const tk='Tibia_'+segState.side; if(stls[tk]) segShowTibia(stls[tk]); }   // the donor tibia as a translucent reference beside the fibula
+    if(d.error){ segLog('Load failed: '+d.error); segClearGrow(false); return; }
+    ingest(d.positions, key);                                  // builds the finished mesh (small STL → cheap)
+    const finalMesh=(r.region==='head') ? boneMesh : fibulaMesh;
+    // move the reveal (world coords) onto the finished mesh's display frame so the fade reads as a morph
+    let revOffset=null;
+    if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }
+    else if(r.region==='leg' && window._fibulaOffset){ const o=window._fibulaOffset; revOffset=new THREE.Vector3(-o.ctr.x, -o.ctr.y-o.dy, -o.ctr.z); }
+    _crossfadeReveal(finalMesh, revOffset, camBefore, _fitParams(finalMesh));   // gradual, non-blocking hand-off
+    // Defer the secondary overlays + reframe across frames so nothing piles into one turn (no freeze).
+    const tasks=[];
+    if(r.region==='leg'){
+      // the LEG view is the donor: show fibula + tibia only, NOT the leftover mandible/skull/canal (head work)
+      tasks.push(function(){ if(boneMesh)boneMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(window._canalMesh)window._canalMesh.visible=false; });
+      tasks.push(function(){ const tk='Tibia_'+segState.side; if(stls[tk]) segShowTibia(stls[tk]); });   // the donor tibia as a translucent reference beside the fibula
+    } else {
+      tasks.push(function(){ if(stls['MandibularCanal']) segShowCanal(stls['MandibularCanal']); });      // re-add the nerve canal aligned to the re-centered mandible
+      tasks.push(function(){ if(stls['Skull']) segShowSkull(stls['Skull']); });
+    }
+    tasks.push(function(){ if(typeof resize==='function')resize(); if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate(); });
+    _deferChain(tasks);
     const others=Object.keys(stls).filter(function(k){return k!==key;});
     segLog('Loaded '+key+'. Also produced: '+(others.join(', ')||'none'));
     closeSegmentation(); toast(key+' segmented and loaded.');
-    // Size the canvas + reframe once layout has settled. Centre on the FIBULA for a leg (it lives off
-    // at y≈−360, so fitView on the mandible/group would leave it off-screen — the "non si autocentra").
-    requestAnimationFrame(function(){ if(typeof resize==='function')resize();
-      if(r.region==='leg' && fibulaMesh){ fitObject(fibulaMesh); } else { fitView(); }
-      if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate(); });
   });
 }
 

@@ -1171,21 +1171,20 @@ def segment(dicom_folder, series_id, region, work_dir):
         # direct DentalSegmentator (fast, shows a percentage); MOOSE is the fallback
         label_nii = run_dental_nnunet(nifti, work_dir) or run_moose(nifti, cfg["moose_model"], work_dir)
     else:
-        # direct Peripheral-Bones nnU-Net (fibula+tibia stream in LIVE per tile, like the mandible).
-        # MOOSE is the fallback for ANY in-process failure, not just a missing model: MOOSE is a
-        # separate subprocess with a lighter footprint (no reveal, no native-CT array), so it can
-        # succeed where the in-process run hit a snag. On fallback we replay the slices post-hoc.
-        label_nii = None
-        try:
-            label_nii = run_peripheral_nnunet(nifti, work_dir)
+        # LEG: MOOSE, which is IMPECCABLE and DETERMINISTIC (connected fibula+tibia matching the
+        # clinical ground truth). We tried the direct in-process nnU-Net for a live reveal, but it
+        # segments the leg WRONG: a tight bone crop strips the body context and the peripheral model
+        # (which segments the whole skeleton) mislabels the leg as ARM/axial bones (the tibia shaft
+        # becomes ulna/clavicle) and the bones come out as a fragmented "sgobbio". Feeding the full
+        # scan needs the native-resolution argmax MOOSE does memory-efficiently, but that OOMs (~15 GB
+        # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
+        # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
+        # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
+        label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+        try:                                     # MOOSE gives no live hook → replay the leg slices so it forms in 3D
+            emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
         except Exception as e:
-            log("direct leg nnU-Net failed, falling back to MOOSE:", e)
-        if label_nii is None:
-            label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
-            try:                                 # MOOSE gives no live hook → replay the leg slices so it forms in 3D
-                emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
-            except Exception as e:
-                log("leg reveal skipped:", e)
+            log("leg reveal skipped:", e)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
     stls = labels_to_stls(label_nii, cfg, stl_dir)
