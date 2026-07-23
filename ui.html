@@ -77,6 +77,19 @@ html,body{
 
 /* viewer */
 #viewerwrap{flex:1;min-height:0;background:radial-gradient(120% 120% at 50% 35%,#161616 0%,#0e0e0e 70%);display:none;position:relative;overflow:hidden}
+/* small muted-green CSS-3D "working" cube, centred in the viewport; pure DOM so it always shows regardless of the WebGL/camera state */
+#segWaitCube{position:absolute;left:50%;top:50%;width:60px;height:60px;perspective:340px;pointer-events:none;opacity:0;transition:opacity .7s ease;z-index:6;transform:translate(-50%,-50%)}
+#segWaitCube.on{opacity:1;animation:swcbreath 3.4s ease-in-out infinite}
+#segWaitCube .swc{position:absolute;width:60px;height:60px;transform-style:preserve-3d;animation:swcspin 5s linear infinite}
+#segWaitCube .swc span{position:absolute;width:60px;height:60px;background:rgba(95,174,134,.28);border:1px solid rgba(134,239,172,.5);box-shadow:inset 0 0 22px rgba(95,174,134,.4)}
+#segWaitCube .swc span:nth-child(1){transform:translateZ(30px)}
+#segWaitCube .swc span:nth-child(2){transform:rotateY(180deg) translateZ(30px)}
+#segWaitCube .swc span:nth-child(3){transform:rotateY(90deg) translateZ(30px)}
+#segWaitCube .swc span:nth-child(4){transform:rotateY(-90deg) translateZ(30px)}
+#segWaitCube .swc span:nth-child(5){transform:rotateX(90deg) translateZ(30px)}
+#segWaitCube .swc span:nth-child(6){transform:rotateX(-90deg) translateZ(30px)}
+@keyframes swcspin{from{transform:rotateX(-24deg) rotateY(0deg)}to{transform:rotateX(-24deg) rotateY(360deg)}}
+@keyframes swcbreath{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.07)}}
 #gl{position:absolute;inset:0;display:block;width:100%;height:100%;cursor:grab}
 #gl:active{cursor:grabbing}
 .lt-ovl{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:8px;pointer-events:none;z-index:6}
@@ -393,6 +406,8 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
       <!-- viewer -->
       <div id="viewerwrap">
         <canvas id="gl"></canvas>
+        <!-- "working" placeholder: a small CSS-3D cube centred over the viewport, shown from Start until the CT reveal germinates -->
+        <div id="segWaitCube"><div class="swc"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
         <div id="fguideDonorBox" class="vdrop" style="display:none" onclick="openFibula()"
           ondragover="event.preventDefault();this.classList.add('dzover')" ondragleave="this.classList.remove('dzover')"
           ondrop="this.classList.remove('dzover');onDropFibula(event)">
@@ -4630,42 +4645,24 @@ function segPickFolder(){
     $('segSeries').innerHTML='<option>reading series</option>'; $('segStatus').textContent='reading DICOM series';
     segBusy(true); segBar(null); B.seg_list_series(d); });
 }
-// "Working" placeholder shown from Start until the CT reveal germinates: a SMALL solid cube in a soft,
-// muted UniGuide green (about the size of an eye or a nose), gently tumbling with a faint breathing glow.
-// depthTest off + a high renderOrder so it ALWAYS draws on top of whatever is on stage -> guaranteed
-// visible. It floats a touch toward the camera and DISSOLVES out the moment the first slice appears.
-let _waitCube=null,_waitCubeRaf=0,_waitFadeT0=0,_waitT0=0;
+// "Working" placeholder shown from Start until the CT reveal germinates. It is a pure DOM/CSS-3D cube
+// (#segWaitCube), NOT a WebGL object, so it ALWAYS shows centred in the viewport regardless of the
+// camera / scene / render state. Started on Start, faded out the moment the first slice appears.
+let _waitHideT=0;
 function _startWaitCube(){
-  _disposeWaitCube();
-  if(typeof scene==='undefined'||!scene||typeof THREE==='undefined'||!orbit) return;
-  try{ if(typeof applyOrbit==='function') applyOrbit(); }catch(e){}  // sync the camera: with no model AND no interaction yet it still sits at the origin, i.e. INSIDE the cube -> invisible
-  const r=(orbit.r||200), s=Math.max(3,r*0.06);                    // small: about an eye / nose, not big
-  const body=new THREE.Mesh(new THREE.BoxGeometry(s,s,s),
-    new THREE.MeshStandardMaterial({color:0x5fae86,emissive:0x3f9068,emissiveIntensity:0.6,roughness:0.45,metalness:0.05,transparent:true,opacity:0,depthTest:false,depthWrite:false}));
-  body.renderOrder=999; body.name='waitCube'; body.userData.s=s;   // always on top -> never hidden behind geometry
-  scene.add(body); _waitCube=body; _waitFadeT0=0; _waitT0=performance.now();
-  _waitCubeTick();
+  const el=document.getElementById('segWaitCube'); if(!el) return;
+  if(_waitHideT){ clearTimeout(_waitHideT); _waitHideT=0; }
+  el.style.display='block';
+  requestAnimationFrame(function(){ el.classList.add('on'); });   // next frame so the opacity transition actually plays
 }
-function _waitCubeTick(){
-  if(!_waitCube){ _waitCubeRaf=0; return; }
-  const now=performance.now(), t=(now-_waitT0)/1000, r=(orbit.r||200);
-  _waitCube.rotation.set(t*0.5, t*0.75, 0);                        // gentle tumble
-  _waitCube.scale.setScalar(1+Math.sin(t*1.6)*0.05);              // faint breathing
-  let p=orbit.tgt.clone();
-  try{ if(typeof camera!=='undefined'&&camera){ p.add(camera.position.clone().sub(orbit.tgt).normalize().multiplyScalar(r*0.18)); } }catch(e){}
-  _waitCube.position.copy(p);                                      // float a touch toward the camera
-  const env = !_waitFadeT0 ? Math.min(1,(now-_waitT0)/650) : Math.max(0,1-(now-_waitFadeT0)/850);
-  _waitCube.material.opacity=0.9*env;                             // a solid little cube
-  _waitCube.material.emissiveIntensity=0.5+0.25*Math.sin(t*1.6);  // soft glow pulse
-  invalidate();
-  if(_waitFadeT0 && env<=0){ _disposeWaitCube(); return; }
-  _waitCubeRaf=requestAnimationFrame(_waitCubeTick);
+function _fadeWaitCube(){ _hideWaitCube(); }        // the CT is germinating -> dissolve it out
+function _disposeWaitCube(){ _hideWaitCube(); }     // error / cleanup safety
+function _hideWaitCube(){
+  const el=document.getElementById('segWaitCube'); if(!el) return;
+  el.classList.remove('on');                        // fade to opacity 0 (CSS transition)
+  if(_waitHideT) clearTimeout(_waitHideT);
+  _waitHideT=setTimeout(function(){ if(!el.classList.contains('on')) el.style.display='none'; _waitHideT=0; }, 800);
 }
-function _fadeWaitCube(){ if(_waitCube && !_waitFadeT0) _waitFadeT0=performance.now(); }   // start the graceful dissolve
-function _disposeWaitCube(){ if(_waitCubeRaf){ cancelAnimationFrame(_waitCubeRaf); _waitCubeRaf=0; }
-  if(_waitCube){ try{ if(typeof scene!=='undefined'&&scene) scene.remove(_waitCube); }catch(e){}
-    if(_waitCube.geometry)_waitCube.geometry.dispose(); if(_waitCube.material)_waitCube.material.dispose(); _waitCube=null; }
-  _waitFadeT0=0; }
 function segStart(){
   if(segState.running)return;
   const sel=$('segSeries'), s=segState.series&&segState.series[+(sel&&sel.value)];
