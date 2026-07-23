@@ -4581,10 +4581,10 @@ function _crossfadeReveal(finalMesh, revOffset, startCam, fit){
   const mats=_matsOf(finalMesh); mats.forEach(function(m){ m._wasTransp=m.transparent; m._wasDW=m.depthWrite; m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; });
   const scan=_scanGlow(mats);
   if(startCam){ orbit.tgt.copy(startCam.tgt); orbit.r=startCam.r; }   // begin from the reveal framing (ingest may have snapped it)
-  const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=2600;
+  const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=3200;
   (function tick(){
     const raw=Math.min(1,(performance.now()-t0)/dur);
-    const e = raw<0.5 ? 4*raw*raw*raw : 1-Math.pow(-2*raw+2,3)/2;   // easeInOutCubic → very smooth, no stepping
+    const e = raw*raw*(3-2*raw);                                   // smoothstep: gentle, uniform, no fast middle -> never reads as a jump
     mats.forEach(function(m){ m.opacity=e; });                       // the model fades IN
     if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });   // the slices fade OUT, both visible together
     scan.y.value = y0 - span*0.12 + span*1.24*raw;                   // the glow band sweeps bottom -> top, a touch past each end
