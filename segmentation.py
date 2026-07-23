@@ -365,7 +365,7 @@ def _live_ct_sweep(ct_nifti, stop_ev, step_mm=1.4, target_px=440, pace_s=1.4):
             rgba = np.zeros((ny, nx, 4), np.uint8)
             rgba[..., 0] = (gih * 0.82).astype(np.uint8); rgba[..., 1] = (gih * 0.90).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)
             rgba[..., 3] = np.where(gi > 55, 42, 0).astype(np.uint8)
-            rgba[bone[zi]] = (255, 186, 88, 150)                        # TRANSLUCENT amber -> the whole-leg bone stack reads as a gentle scan, not a solid-yellow block (the placeholder is replaced by the clean fibula/tibia reveal at the end)
+            # PASSIVE read: no amber overlay, just the translucent grayscale CT (bone already shows bright in the window). The segmentation is computed silently; the transition to the 3D model does the reveal.
             im = Image.fromarray(rgba, "RGBA")
             if im.width > target_px:
                 im = im.resize((target_px, max(1, int(target_px * im.height / im.width))), Image.LANCZOS)
@@ -714,7 +714,7 @@ def _make_reveal(crop_img, grow_dir, cm, transpose_forward, debug_dir=None, pain
                 rgba = np.zeros((ny, nx, 4), np.uint8)
                 rgba[..., 0] = (gih * 0.82).astype(np.uint8); rgba[..., 1] = (gih * 0.90).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool but VISIBLE context
                 rgba[..., 3] = np.where(gi > 55, 42, 0).astype(np.uint8)         # visible CT haze, not "quasi invisibile"
-                rgba[mand] = (255, 186, 88, 255)                                  # bold warm amber bone, opaque → the mandible pops as it forms
+                # PASSIVE read: no amber overlay on the mandible either -> just the translucent grayscale CT. The slow transition to the 3D model is the reveal now.
             im = Image.fromarray(rgba, "RGBA")
             if im.width > 640:                                                   # crisp: 640 px keeps the slice sharp on screen
                 im = im.resize((640, max(1, int(640 * im.height / im.width))), Image.LANCZOS)
@@ -1235,6 +1235,68 @@ def ct_bundle(dicom_folder, series_id, work_dir):
     return {"ok": True, "bundle": path, "names": GENERIC_LABELS}
 
 
+def _crop_leg_roi(nifti, out_path, margin_mm=95.0):
+    """Crop a whole-limb CT to the lower-leg band holding the tibia+fibula (drop the pelvis/femur above and
+    the foot below) so MOOSE runs on a fraction of the slices (~2.4x faster, far less RAM). Keeps BOTH legs
+    (the donor side is chosen later from the labels) so there is NO left/right risk. Signature: the lower
+    leg is the LONGEST run of axial slices with 3-5 sizeable bone components (2 tibiae + 2 fibulae) AND a
+    small bone area (thin bones) -> that excludes the 2-femur thigh, the high-area knee/pelvis, and the
+    many-boned foot. Verified on BENEDETTO's real CT: it kept the full clinical GT tibia+fibula with a 30+ mm
+    margin each side. Returns the cropped nifti path, or None (caller keeps the FULL scan) on any doubt."""
+    try:
+        img = sitk.ReadImage(nifti)
+        sp = np.array(img.GetSpacing(), float)             # (sx, sy, sz)
+        arr = sitk.GetArrayFromImage(img)                  # (z, y, x) HU
+        nz, ny, nx = arr.shape
+        if nz < 300:                                       # already short -> nothing worth cropping
+            return None
+        minpx = max(20, int(40.0 / (sp[0] * sp[1])))       # a "sizeable" bone cross-section (> ~40 mm^2)
+        pxmm = float(sp[0] * sp[1])
+        stride = max(1, int(round(2.0 / sp[2])))           # profile ~every 2 mm (fast)
+        zs = np.arange(0, nz, stride)
+        ncomp = np.zeros(len(zs), int); area = np.zeros(len(zs), float)
+        for i, z in enumerate(zs):
+            b = arr[z] > 300.0
+            lab, n = ndimage.label(b)
+            if n:
+                szc = ndimage.sum(b, lab, range(1, n + 1)); big = szc[szc > minpx]
+                ncomp[i] = len(big); area[i] = float(big.sum()) * pxmm
+        qual = (ncomp >= 3) & (ncomp <= 5) & (area > 0) & (area < 1800.0)   # thin 4-bone lower leg
+        best = (-1, 0, 0); i = 0                            # longest qualifying run (tolerate small strided gaps)
+        while i < len(qual):
+            if qual[i]:
+                j = i
+                while j + 1 < len(qual) and (qual[j + 1] or (j + 2 < len(qual) and qual[j + 2]) or (j + 3 < len(qual) and qual[j + 3])):
+                    j += 1
+                if zs[j] - zs[i] > best[0]:
+                    best = (int(zs[j] - zs[i]), int(zs[i]), int(zs[j]))
+                i = j + 1
+            else:
+                i += 1
+        if best[0] * sp[2] < 120:                          # no convincing lower-leg band -> keep the full scan
+            return None
+        dz = int(round(margin_mm / sp[2]))
+        z0 = max(0, best[1] - dz); z1 = min(nz - 1, best[2] + dz)
+        if (z1 - z0 + 1) >= int(0.9 * nz):                 # barely a crop -> not worth it
+            return None
+        band = arr[z0:z1 + 1] > 300.0                       # XY tight bbox of the bone in the band (both legs) + margin -> drop air/table
+        ys = np.where(band.any(axis=(0, 2)))[0]; xs = np.where(band.any(axis=(0, 1)))[0]
+        if len(ys) < 5 or len(xs) < 5:
+            return None
+        my = int(round(20.0 / sp[1])); mx = int(round(20.0 / sp[0]))
+        y0 = max(0, int(ys.min()) - my); y1 = min(ny - 1, int(ys.max()) + my)
+        x0 = max(0, int(xs.min()) - mx); x1 = min(nx - 1, int(xs.max()) + mx)
+        roi = sitk.RegionOfInterest(img, [x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1], [x0, y0, z0])
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        sitk.WriteImage(roi, out_path)
+        log("leg ROI crop: kept %d/%d slices, size %dx%dx%d (was %dx%dx%d)" % (
+            z1 - z0 + 1, nz, x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1, nx, ny, nz))
+        return out_path
+    except Exception as e:
+        log("leg ROI crop skipped:", e)
+        return None
+
+
 def segment(dicom_folder, series_id, region, work_dir):
     if region not in REGIONS:
         raise ValueError("unknown region %r (expected head|leg)" % region)
@@ -1256,13 +1318,16 @@ def segment(dicom_folder, series_id, region, work_dir):
         # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
         # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
         # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
-        # MOOSE has NO per-tile hook, so we can't reveal the fibula/tibia mask WHILE it runs. But a long
-        # blank wait feels stuck, so we stream a LIVE CT sweep from the input scan during compute (softened
-        # so it isn't a solid-yellow block) -> the user sees slices scrolling right away. When MOOSE returns
-        # we RESET that placeholder and replay a CLEAN reveal painting ONLY the fibula/tibia (exactly like
-        # the head paints only the mandible), then crossfade to the STL. So: live scan (during MOOSE) ->
-        # clean donor-bone reveal (after, head style) -> model. The label is in the input-CT frame (run_moose
-        # staging fix), so it overlays cleanly.
+        # CROP to the lower-leg band (tibia+fibula), dropping the pelvis/femur above and the foot below, so
+        # MOOSE runs on ~40% of the slices (~2.4x faster + far less RAM). Keeps BOTH legs (donor side picked
+        # from the labels) -> no left/right risk. Falls back to the full scan if detection is uncertain.
+        roi = _crop_leg_roi(nifti, os.path.join(work_dir, "input", "CT_leg_roi.nii.gz"))
+        if roi:
+            nifti = roi
+            log("cropped the leg to the tibia/fibula band before MOOSE")
+        # No amber reveal: stream a PASSIVE grayscale CT sweep from the (cropped) scan while MOOSE computes,
+        # so slices scroll right away and the wait never feels stuck. MOOSE runs silently; the slow
+        # crossfade from the CT world to the 3D model IS the reveal.
         import threading
         _stop = threading.Event()
         _sweeper = threading.Thread(target=_live_ct_sweep, args=(nifti, _stop), daemon=True)
@@ -1271,11 +1336,6 @@ def segment(dicom_folder, series_id, region, work_dir):
             label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
         finally:
             _stop.set(); _sweeper.join(timeout=3)
-        log("SLICE_RESET")                       # drop the all-bone placeholder before the clean donor-bone reveal
-        try:
-            emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
-        except Exception as e:
-            log("leg reveal skipped:", e)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
     stls = labels_to_stls(label_nii, cfg, stl_dir)
