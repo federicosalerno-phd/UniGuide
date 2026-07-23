@@ -4630,42 +4630,32 @@ function segPickFolder(){
     $('segSeries').innerHTML='<option>reading series</option>'; $('segStatus').textContent='reading DICOM series';
     segBusy(true); segBar(null); B.seg_list_series(d); });
 }
-// "Working" placeholder shown from Start until the CT reveal germinates: a SMALL UniGuide-green cube
-// that gently tumbles + breathes, with two tiny satellites drifting around it and a soft glow pulse.
-// It floats a little in front of the view centre so it never embeds in whatever is on stage, and it
-// DISSOLVES out the moment the first slice appears. Non-invasive, just a calm sign that work is happening.
+// "Working" placeholder shown from Start until the CT reveal germinates: a SMALL solid cube in a soft,
+// muted UniGuide green (about the size of an eye or a nose), gently tumbling with a faint breathing glow.
+// depthTest off + a high renderOrder so it ALWAYS draws on top of whatever is on stage -> guaranteed
+// visible. It floats a touch toward the camera and DISSOLVES out the moment the first slice appears.
 let _waitCube=null,_waitCubeRaf=0,_waitFadeT0=0,_waitT0=0;
 function _startWaitCube(){
   _disposeWaitCube();
   if(typeof scene==='undefined'||!scene||typeof THREE==='undefined'||!orbit) return;
-  const r=(orbit.r||200), s=Math.max(5,r*0.09);                    // small relative to the current framing
-  const grp=new THREE.Group(); grp.name='waitCube';
+  const r=(orbit.r||200), s=Math.max(3,r*0.06);                    // small: about an eye / nose, not big
   const body=new THREE.Mesh(new THREE.BoxGeometry(s,s,s),
-    new THREE.MeshStandardMaterial({color:0x4ade80,emissive:0x2fbb6a,emissiveIntensity:0.55,roughness:0.3,metalness:0.05,transparent:true,opacity:0,depthWrite:false}));
-  const edges=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(s,s,s)),
-    new THREE.LineBasicMaterial({color:0x86efac,transparent:true,opacity:0}));
-  grp.add(body); grp.add(edges);
-  const sats=[]; for(let i=0;i<2;i++){ const d=new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.6,s*0.08),10,10),
-      new THREE.MeshBasicMaterial({color:0x4ade80,transparent:true,opacity:0})); d.userData.k=i; grp.add(d); sats.push(d); }
-  grp.userData={sats:sats, s:s, body:body, edges:edges};
-  scene.add(grp); _waitCube=grp; _waitFadeT0=0; _waitT0=performance.now();
+    new THREE.MeshStandardMaterial({color:0x5fae86,emissive:0x3f9068,emissiveIntensity:0.6,roughness:0.45,metalness:0.05,transparent:true,opacity:0,depthTest:false,depthWrite:false}));
+  body.renderOrder=999; body.name='waitCube'; body.userData.s=s;   // always on top -> never hidden behind geometry
+  scene.add(body); _waitCube=body; _waitFadeT0=0; _waitT0=performance.now();
   _waitCubeTick();
 }
 function _waitCubeTick(){
   if(!_waitCube){ _waitCubeRaf=0; return; }
-  const now=performance.now(), t=(now-_waitT0)/1000, ud=_waitCube.userData, s=ud.s;
-  _waitCube.rotation.set(t*0.55, t*0.8, 0);
-  _waitCube.scale.setScalar(1+Math.sin(t*1.8)*0.05);              // gentle breathing
-  // float a touch toward the camera so it never embeds in whatever is on stage
+  const now=performance.now(), t=(now-_waitT0)/1000, r=(orbit.r||200);
+  _waitCube.rotation.set(t*0.5, t*0.75, 0);                        // gentle tumble
+  _waitCube.scale.setScalar(1+Math.sin(t*1.6)*0.05);              // faint breathing
   let p=orbit.tgt.clone();
-  try{ if(typeof camera!=='undefined'&&camera){ p.add(camera.position.clone().sub(orbit.tgt).normalize().multiplyScalar((orbit.r||200)*0.32)); } }catch(e){}
-  _waitCube.position.copy(p);
-  (ud.sats||[]).forEach(function(d){ const a=t*1.3+d.userData.k*Math.PI, R=s*1.15;
-    d.position.set(Math.cos(a)*R, Math.sin(a*0.9)*R*0.35, Math.sin(a)*R); });
-  const env = !_waitFadeT0 ? Math.min(1,(now-_waitT0)/650) : Math.max(0,1-(now-_waitFadeT0)/850);  // fade in / fade out on germination
-  ud.body.material.opacity=0.14*env; ud.edges.material.opacity=0.85*env;
-  ud.body.material.emissiveIntensity=0.4+0.3*Math.sin(t*1.8);
-  (ud.sats||[]).forEach(function(d){ d.material.opacity=0.9*env; });
+  try{ if(typeof camera!=='undefined'&&camera){ p.add(camera.position.clone().sub(orbit.tgt).normalize().multiplyScalar(r*0.18)); } }catch(e){}
+  _waitCube.position.copy(p);                                      // float a touch toward the camera
+  const env = !_waitFadeT0 ? Math.min(1,(now-_waitT0)/650) : Math.max(0,1-(now-_waitFadeT0)/850);
+  _waitCube.material.opacity=0.9*env;                             // a solid little cube
+  _waitCube.material.emissiveIntensity=0.5+0.25*Math.sin(t*1.6);  // soft glow pulse
   invalidate();
   if(_waitFadeT0 && env<=0){ _disposeWaitCube(); return; }
   _waitCubeRaf=requestAnimationFrame(_waitCubeTick);
@@ -4673,7 +4663,7 @@ function _waitCubeTick(){
 function _fadeWaitCube(){ if(_waitCube && !_waitFadeT0) _waitFadeT0=performance.now(); }   // start the graceful dissolve
 function _disposeWaitCube(){ if(_waitCubeRaf){ cancelAnimationFrame(_waitCubeRaf); _waitCubeRaf=0; }
   if(_waitCube){ try{ if(typeof scene!=='undefined'&&scene) scene.remove(_waitCube); }catch(e){}
-    _waitCube.traverse(function(o){ if(o.geometry)o.geometry.dispose(); if(o.material)o.material.dispose(); }); _waitCube=null; }
+    if(_waitCube.geometry)_waitCube.geometry.dispose(); if(_waitCube.material)_waitCube.material.dispose(); _waitCube=null; }
   _waitFadeT0=0; }
 function segStart(){
   if(segState.running)return;
