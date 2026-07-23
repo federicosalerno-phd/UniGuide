@@ -1143,6 +1143,11 @@ function initGL(){
     else if((curP===FIBGUIDE||curP===DONOR) && P.fibHolePick){ hoverFibHole(e); }   // live-highlight the boss under the cursor (hoverFibHole invalidates only when it changes → fluid)
   });
   window.addEventListener('resize',resize);
+  // The window 'resize' event fixes the aspect, but the FIRST time #viewerwrap gets its real size (it starts
+  // display:none, and the layout settles a frame late) NO resize fires, so the reveal renders slightly
+  // squished until the user nudges the window. A ResizeObserver recomputes the renderer + camera aspect on
+  // ANY size change of the viewer, including that first appearance, so it is always correctly proportioned.
+  try{ if(window.ResizeObserver){ new ResizeObserver(function(){ if(renderer) resize(); }).observe($('viewerwrap')); } }catch(e){}
 }
 
 // ── minimal, robust orbit controls (rotate / dolly / pan) ────────────────────
@@ -4229,7 +4234,7 @@ function ingestFibula(positions,name){
   const _fdy=Math.max(modelRadius*6,300);
   window._fibulaOffset={ctr:ctr.clone(), dy:_fdy};           // display frame: world - ctr - (0,dy,0) → the tibia reference reuses it to stay aligned
   geo.translate(0,-_fdy,0); geo.computeBoundingBox();
-  fibulaMesh=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xb9c4d0,roughness:0.6,metalness:0,side:THREE.DoubleSide}));
+  fibulaMesh=new THREE.Mesh(geo, M_bone());     // SAME warm-bone material as the mandible -> identical graphic style (tibia already matches the skull)
   fibulaMesh.name='fibula'; group.add(fibulaMesh);
   fibulaAxis=fibulaAxisFit(geo);
   if(fibulaAxis&&fibulaAxis.encR){                           // segment Ø is FIXED to the fibula's enclosing cylinder — not user-adjustable
@@ -6841,6 +6846,7 @@ function go(idx){
   const showViewer=idx>0;
   $('p0wrap').style.display=idx===0?'flex':'none';
   $('viewerwrap').style.display=showViewer?'block':'none';
+  if(showViewer) requestAnimationFrame(function(){ if(renderer) resize(); });   // correct the aspect the instant the viewer is shown (no squished first frame)
   $('ctoolbar').style.display=showViewer?'flex':'none';
   setSt(STEP_INFO[idx], modelLoaded?'ok':'');
   $('ovStep').textContent=STEP_INFO[idx];

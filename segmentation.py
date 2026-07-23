@@ -275,8 +275,18 @@ def run_moose(ct_nifti, model, work_dir):
     if not hits:
         raise RuntimeError("MOOSE produced no segmentation under %s" % subj)
     hits.sort(key=os.path.getmtime)
-    log("MOOSE output:", hits[-1])
-    return hits[-1]
+    out = hits[-1]
+    log("MOOSE output:", out)
+    # SAFETY: the label must sit in the input CT's grid (metadata-only read, cheap). A mismatch means MOOSE
+    # segmented a different scan (the stale-staging bug) -> the STL would be shifted from the CT reveal.
+    try:
+        _r = sitk.ImageFileReader(); _r.SetFileName(out); _r.ReadImageInformation()
+        _c = sitk.ImageFileReader(); _c.SetFileName(ct_nifti); _c.ReadImageInformation()
+        if _r.GetSize() != _c.GetSize():
+            log("WARNING: MOOSE label size %s != input CT %s -- possible wrong-scan segmentation" % (_r.GetSize(), _c.GetSize()))
+    except Exception:
+        pass
+    return out
 
 
 def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=220, target_px=640):
