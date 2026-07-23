@@ -4638,6 +4638,7 @@ let _waitCube=null,_waitCubeRaf=0,_waitFadeT0=0,_waitT0=0;
 function _startWaitCube(){
   _disposeWaitCube();
   if(typeof scene==='undefined'||!scene||typeof THREE==='undefined'||!orbit) return;
+  try{ if(typeof applyOrbit==='function') applyOrbit(); }catch(e){}  // sync the camera: with no model AND no interaction yet it still sits at the origin, i.e. INSIDE the cube -> invisible
   const r=(orbit.r||200), s=Math.max(3,r*0.06);                    // small: about an eye / nose, not big
   const body=new THREE.Mesh(new THREE.BoxGeometry(s,s,s),
     new THREE.MeshStandardMaterial({color:0x5fae86,emissive:0x3f9068,emissiveIntensity:0.6,roughness:0.45,metalness:0.05,transparent:true,opacity:0,depthTest:false,depthWrite:false}));
