@@ -102,7 +102,7 @@ except Exception:
     USE_QT6 = False
 
 APP_NAME = "UniGuide"
-APP_VERSION = "0.1.6"
+APP_VERSION = "0.1.7"
 
 
 def _res_dir():
