@@ -249,11 +249,16 @@ def run_moose(ct_nifti, model, work_dir):
     MOOSE wants <main>/<subject>/CT_*.nii.gz, so we stage the image accordingly.
     """
     main_dir = os.path.join(work_dir, "moose_in")
+    # CRITICAL: wipe any stale staged CT + old MOOSE outputs first. This dir accumulated CTs across runs
+    # (e.g. a leftover CT_head.nii.gz that was actually a previous LEG scan), and MOOSE then segmented the
+    # WRONG file — so the fibula/tibia STL came out in a DIFFERENT physical frame than the CT the live
+    # reveal reads, i.e. the model appeared shifted from the TAC. Staging exactly ONE image per run, into a
+    # freshly emptied subject, forces MOOSE to segment THIS input, in THIS input's frame -> reveal + STL overlap.
+    shutil.rmtree(main_dir, ignore_errors=True)
     subj = os.path.join(main_dir, "CASE")
     os.makedirs(subj, exist_ok=True)
-    staged = os.path.join(subj, "CT_" + os.path.basename(ct_nifti).replace("CT_", ""))
-    if os.path.abspath(staged) != os.path.abspath(ct_nifti):
-        shutil.copyfile(ct_nifti, staged)
+    staged = os.path.join(subj, "CT_INPUT.nii.gz")
+    shutil.copyfile(ct_nifti, staged)
 
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
