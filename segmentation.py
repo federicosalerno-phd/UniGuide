@@ -365,7 +365,7 @@ def _live_ct_sweep(ct_nifti, stop_ev, step_mm=1.4, target_px=440, pace_s=1.4):
             rgba = np.zeros((ny, nx, 4), np.uint8)
             rgba[..., 0] = (gih * 0.82).astype(np.uint8); rgba[..., 1] = (gih * 0.90).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)
             rgba[..., 3] = np.where(gi > 55, 42, 0).astype(np.uint8)
-            rgba[bone[zi]] = (255, 186, 88, 255)                        # bold warm amber bone forming, live
+            rgba[bone[zi]] = (255, 186, 88, 150)                        # TRANSLUCENT amber -> the whole-leg bone stack reads as a gentle scan, not a solid-yellow block (the placeholder is replaced by the clean fibula/tibia reveal at the end)
             im = Image.fromarray(rgba, "RGBA")
             if im.width > target_px:
                 im = im.resize((target_px, max(1, int(target_px * im.height / im.width))), Image.LANCZOS)
@@ -1256,12 +1256,22 @@ def segment(dicom_folder, series_id, region, work_dir):
         # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
         # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
         # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
-        # MOOSE has NO per-tile hook, so nothing can stream DURING compute — the "working" cube covers
-        # that wait. Once MOOSE returns, replay a reveal that paints ONLY the fibula/tibia (exactly like
-        # the head reveal paints only the mandible), so the leg slices match the head in STYLE and COLOUR
-        # instead of the old placeholder that lit up ALL leg bone (the "always yellow" look). The label is
-        # now in the input-CT frame (run_moose staging fix), so `emit_reveal_from_ct` overlays it cleanly.
-        label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+        # MOOSE has NO per-tile hook, so we can't reveal the fibula/tibia mask WHILE it runs. But a long
+        # blank wait feels stuck, so we stream a LIVE CT sweep from the input scan during compute (softened
+        # so it isn't a solid-yellow block) -> the user sees slices scrolling right away. When MOOSE returns
+        # we RESET that placeholder and replay a CLEAN reveal painting ONLY the fibula/tibia (exactly like
+        # the head paints only the mandible), then crossfade to the STL. So: live scan (during MOOSE) ->
+        # clean donor-bone reveal (after, head style) -> model. The label is in the input-CT frame (run_moose
+        # staging fix), so it overlays cleanly.
+        import threading
+        _stop = threading.Event()
+        _sweeper = threading.Thread(target=_live_ct_sweep, args=(nifti, _stop), daemon=True)
+        _sweeper.start()
+        try:
+            label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
+        finally:
+            _stop.set(); _sweeper.join(timeout=3)
+        log("SLICE_RESET")                       # drop the all-bone placeholder before the clean donor-bone reveal
         try:
             emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
         except Exception as e:

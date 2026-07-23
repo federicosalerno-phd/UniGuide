@@ -4572,6 +4572,12 @@ function segClearGrow(restoreDemo){ if(_sliceAnim){ cancelAnimationFrame(_sliceA
   if(restoreDemo && _growHidDemo && boneMesh){ boneMesh.visible=true; } _growHidDemo=false;
   if(segState.region==='leg'){ if(boneMesh)boneMesh.visible=true; if(window._canalMesh)window._canalMesh.visible=true; if(window._skullMesh)window._skullMesh.visible=true; }   // leg reveal only HID the mandible/head work → bring it back
 }
+function segSliceReset(){    // LEG: drop the live all-bone placeholder so the clean post-MOOSE fibula/tibia reveal builds fresh (no leftover mix); a new SLICE rebuilds the group
+  if(_sliceAnim){ cancelAnimationFrame(_sliceAnim); _sliceAnim=0; }
+  if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[];
+  if(_sliceGroup){ _sliceGroup.traverse(function(o){ if(o.material&&o.material.map)o.material.map.dispose(); }); disposeMesh(_sliceGroup); _sliceGroup=null; }
+  _sliceN=0; invalidate();
+}
 // ── smooth, non-blocking hand-off from the live reveal to the finished mesh ─────────────────
 // The old path disposed all ~128 reveal textures AND built + reframed the mesh in ONE turn, which
 // froze the main thread (no drag, the spinner stalled), then swapped in the mesh with a hard cut.
@@ -4791,6 +4797,7 @@ function onSegEvent(s){
   }
   if(e.cmd==='segment'){
     if(e.kind==='progress'){
+      if(/\bSLICE_RESET\b/.test(e.text)){ segSliceReset(); return; }   // drop the live all-bone placeholder before the clean fibula/tibia reveal
       const sc=e.text.match(/\bSLICE\s+(\S+)\s+(\S+)/);   // SLICE <world corners> <base64 png>
       if(sc){ segSlice(sc[1], sc[2]); return; }
       const sr=e.text.match(/\bSTL_READY (\S+) (.+)/);
