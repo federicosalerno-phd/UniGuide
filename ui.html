@@ -77,19 +77,22 @@ html,body{
 
 /* viewer */
 #viewerwrap{flex:1;min-height:0;background:radial-gradient(120% 120% at 50% 35%,#161616 0%,#0e0e0e 70%);display:none;position:relative;overflow:hidden}
-/* small muted-green CSS-3D "working" cube, centred in the viewport; pure DOM so it always shows regardless of the WebGL/camera state.
-   Each motion lives on its OWN nested element so their transforms never fight, and all run on the compositor -> buttery smooth. */
-#segWaitCube{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;opacity:0;transition:opacity .8s ease;z-index:6}
+/* small muted-green CSS-3D "working" cube, centred in the viewport. Centring is via translate(-50%,-50%),
+   which is display-agnostic, so toggling display:block/none never un-centres it (the old flex approach broke
+   because JS set display:block, overriding display:flex). Pure DOM -> always visible regardless of WebGL.
+   The cube can be GRABBED and rotated (only rotated, never translated); its orbiting dots rotate with it. */
+#segWaitCube{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:none;pointer-events:none;opacity:0;transition:opacity .8s ease;z-index:6}
 #segWaitCube.on{opacity:1}
 .swc-stage{position:relative;width:64px;height:64px;perspective:440px}
 .swc-halo{position:absolute;left:50%;top:50%;width:150px;height:150px;margin:-75px 0 0 -75px;border-radius:50%;will-change:transform,opacity;
   background:radial-gradient(circle,rgba(95,174,134,.26) 0%,rgba(95,174,134,.10) 42%,rgba(95,174,134,0) 70%);animation:swchalo 3.8s ease-in-out infinite}
-.swc-orbit{position:absolute;left:50%;top:50%;width:106px;height:106px;margin:-53px 0 0 -53px;will-change:transform;animation:swcorbit 7s linear infinite}
+.swc-float{position:absolute;left:0;top:0;width:64px;height:64px;transform-style:preserve-3d;will-change:transform;animation:swcfloat 4.4s ease-in-out infinite}
+.swc-rot{position:relative;width:64px;height:64px;transform-style:preserve-3d;will-change:transform;transform:rotateX(-18deg)}
+#segWaitCube.on .swc-rot{pointer-events:auto;cursor:grab}
+.swc-orbit{position:absolute;left:50%;top:50%;width:106px;height:106px;margin:-53px 0 0 -53px;transform-style:preserve-3d;will-change:transform;animation:swcorbit 7s linear infinite}
 .swc-orbit i{position:absolute;left:50%;top:0;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:rgba(134,239,172,.7);box-shadow:0 0 7px rgba(134,239,172,.55)}
 .swc-orbit i:nth-child(2){top:auto;bottom:0}
-.swc-float{width:64px;height:64px;transform-style:preserve-3d;will-change:transform;animation:swcfloat 4.4s ease-in-out infinite}
-.swc-spin{width:64px;height:64px;transform-style:preserve-3d;will-change:transform;animation:swcyaw 7.5s linear infinite}
-.swc{position:relative;width:64px;height:64px;transform-style:preserve-3d;will-change:transform;animation:swcpitch 10s linear infinite}
+.swc{position:absolute;left:0;top:0;width:64px;height:64px;transform-style:preserve-3d}
 .swc span{position:absolute;width:64px;height:64px;background:rgba(95,174,134,.26);border:1px solid rgba(134,239,172,.5);box-shadow:inset 0 0 22px rgba(95,174,134,.4)}
 .swc span:nth-child(1){transform:translateZ(32px)}
 .swc span:nth-child(2){transform:rotateY(180deg) translateZ(32px)}
@@ -97,11 +100,9 @@ html,body{
 .swc span:nth-child(4){transform:rotateY(-90deg) translateZ(32px)}
 .swc span:nth-child(5){transform:rotateX(90deg) translateZ(32px)}
 .swc span:nth-child(6){transform:rotateX(-90deg) translateZ(32px)}
-@keyframes swcyaw{from{transform:rotateY(0)}to{transform:rotateY(360deg)}}
-@keyframes swcpitch{from{transform:rotateX(0)}to{transform:rotateX(360deg)}}
 @keyframes swcfloat{0%,100%{transform:translateY(-5px) scale(.97)}50%{transform:translateY(5px) scale(1.05)}}
 @keyframes swchalo{0%,100%{opacity:.5;transform:scale(.9)}50%{opacity:1;transform:scale(1.14)}}
-@keyframes swcorbit{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+@keyframes swcorbit{from{transform:rotateZ(0)}to{transform:rotateZ(360deg)}}
 #gl{position:absolute;inset:0;display:block;width:100%;height:100%;cursor:grab}
 #gl:active{cursor:grabbing}
 .lt-ovl{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:8px;pointer-events:none;z-index:6}
@@ -418,13 +419,13 @@ select{width:100%;background:var(--s2);color:var(--t1);border:0.5px solid var(--
       <!-- viewer -->
       <div id="viewerwrap">
         <canvas id="gl"></canvas>
-        <!-- "working" placeholder: a small CSS-3D cube centred over the viewport, shown from Start until the CT reveal germinates -->
+        <!-- "working" placeholder: a small CSS-3D cube centred over the viewport, shown from Start until the CT reveal germinates. Grab .swc-rot to rotate it. -->
         <div id="segWaitCube"><div class="swc-stage">
           <div class="swc-halo"></div>
-          <div class="swc-orbit"><i></i><i></i></div>
-          <div class="swc-float"><div class="swc-spin"><div class="swc">
-            <span></span><span></span><span></span><span></span><span></span><span></span>
-          </div></div></div>
+          <div class="swc-float"><div class="swc-rot">
+            <div class="swc-orbit"><i></i><i></i></div>
+            <div class="swc"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          </div></div>
         </div></div>
         <div id="fguideDonorBox" class="vdrop" style="display:none" onclick="openFibula()"
           ondragover="event.preventDefault();this.classList.add('dzover')" ondragleave="this.classList.remove('dzover')"
@@ -4666,18 +4667,33 @@ function segPickFolder(){
 // "Working" placeholder shown from Start until the CT reveal germinates. It is a pure DOM/CSS-3D cube
 // (#segWaitCube), NOT a WebGL object, so it ALWAYS shows centred in the viewport regardless of the
 // camera / scene / render state. Started on Start, faded out the moment the first slice appears.
-let _waitHideT=0;
+// EASTER EGG: grab the cube (.swc-rot) to rotate it by dragging — only rotate, never translate; its
+// orbiting dots rotate rigidly with it. Release and it resumes tumbling from where you left it.
+let _waitHideT=0, _swcRX=-18, _swcRY=0, _swcRaf=0, _swcGrab=false, _swcWired=false;
+function _swcApply(){ const r=document.querySelector('#segWaitCube .swc-rot'); if(r) r.style.transform='rotateX('+_swcRX.toFixed(2)+'deg) rotateY('+_swcRY.toFixed(2)+'deg)'; }
+function _swcTumble(){ if(!_swcGrab){ _swcRX+=0.28; _swcRY+=0.42; _swcApply(); } _swcRaf=requestAnimationFrame(_swcTumble); }   // gentle auto-tumble on two axes when not held
+function _swcWire(){
+  if(_swcWired) return; const r=document.querySelector('#segWaitCube .swc-rot'); if(!r) return; _swcWired=true;
+  let sx=0, sy=0, brx=0, bry=0;
+  r.addEventListener('pointerdown', function(e){ _swcGrab=true; sx=e.clientX; sy=e.clientY; brx=_swcRX; bry=_swcRY;
+    try{ r.setPointerCapture(e.pointerId); }catch(_){} r.style.cursor='grabbing'; e.preventDefault(); e.stopPropagation(); });
+  r.addEventListener('pointermove', function(e){ if(!_swcGrab) return; _swcRY=bry+(e.clientX-sx)*0.6; _swcRX=brx-(e.clientY-sy)*0.6; _swcApply(); e.preventDefault(); });   // drag = pure rotation, no translation
+  const up=function(e){ if(!_swcGrab) return; _swcGrab=false; try{ r.releasePointerCapture(e.pointerId); }catch(_){} r.style.cursor='grab'; };
+  r.addEventListener('pointerup', up); r.addEventListener('pointercancel', up); r.addEventListener('lostpointercapture', up);
+}
 function _startWaitCube(){
   const el=document.getElementById('segWaitCube'); if(!el) return;
   if(_waitHideT){ clearTimeout(_waitHideT); _waitHideT=0; }
   el.style.display='block';
-  requestAnimationFrame(function(){ el.classList.add('on'); });   // next frame so the opacity transition actually plays
+  _swcWire(); _swcApply(); if(!_swcRaf) _swcTumble();               // start the tumble + enable grab-to-rotate
+  requestAnimationFrame(function(){ el.classList.add('on'); });     // next frame so the opacity transition actually plays
 }
 function _fadeWaitCube(){ _hideWaitCube(); }        // the CT is germinating -> dissolve it out
 function _disposeWaitCube(){ _hideWaitCube(); }     // error / cleanup safety
 function _hideWaitCube(){
   const el=document.getElementById('segWaitCube'); if(!el) return;
   el.classList.remove('on');                        // fade to opacity 0 (CSS transition)
+  _swcGrab=false; if(_swcRaf){ cancelAnimationFrame(_swcRaf); _swcRaf=0; }
   if(_waitHideT) clearTimeout(_waitHideT);
   _waitHideT=setTimeout(function(){ if(!el.classList.contains('on')) el.style.display='none'; _waitHideT=0; }, 800);
 }
