@@ -1269,6 +1269,61 @@ def _crop_leg_air(nifti, out_path, margin_mm=25.0):
         return None
 
 
+def _crop_leg_donor(nifti, side, out_path, margin_mm=40.0):
+    """Crop a two-leg angio to just the DONOR leg at FULL length (femur..knee..tibia/fibula..ankle..foot),
+    dropping the OTHER leg. MOOSE keeps the whole-leg context so it still labels the fibula/tibia correctly
+    -- VERIFIED on OBERTO: the donor-R crop (37% of the width) gave fibula_R (175k vox) + tibia_R (959k vox)
+    in 2.9 min vs ~25 min on the full scan (~8x). Donor side from the DICOM patient orientation (LPS:
+    +x = patient Left); the split is the valley between the two legs. Caller keeps a fail-safe (re-run full
+    if the DONOR bones are missing). Returns path, or None (caller falls back to the air-crop) on any doubt."""
+    try:
+        s = str(side).lower()
+        if not (s.startswith("r") or s.startswith("l")):
+            return None
+        img = sitk.ReadImage(nifti); sp = np.array(img.GetSpacing(), float)
+        arr = sitk.GetArrayFromImage(img); nz, ny, nx = arr.shape
+        if nx < 200 or nz < 200:
+            return None
+        bone = arr > 300.0
+        z_a, z_b = int(nz * 0.35), int(nz * 0.75)          # a mid band where the two legs are clearly separate
+        xprof = bone[z_a:z_b].sum(axis=(0, 1)).astype(float)
+        xs = np.where(xprof > 0)[0]
+        if len(xs) < 20:
+            return None
+        x_lo, x_hi = int(xs.min()), int(xs.max())
+        sm = ndimage.uniform_filter1d(xprof, size=max(3, int(15.0 / sp[0])))
+        c0, c1 = x_lo + (x_hi - x_lo) // 4, x_hi - (x_hi - x_lo) // 4
+        if c1 - c0 < 5:
+            return None
+        split = c0 + int(np.argmin(sm[c0:c1]))             # valley between the two legs
+        dx = img.TransformIndexToPhysicalPoint((1, 0, 0))[0] - img.TransformIndexToPhysicalPoint((0, 0, 0))[0]
+        left_is_high_x = (dx > 0)                            # LPS: +physx = patient Left
+        keep_high = (s.startswith("l") == left_is_high_x)
+        dxs = xs[xs >= split] if keep_high else xs[xs < split]
+        if len(dxs) < 10:
+            return None
+        mx = int(round(margin_mm / sp[0]))
+        x0 = max(0, int(dxs.min()) - mx); x1 = min(nx - 1, int(dxs.max()) + mx)
+        if (x1 - x0 + 1) >= int(0.85 * nx):
+            return None
+        sub = bone[:, :, x0:x1 + 1]
+        ysd = np.where(sub.any(axis=(0, 2)))[0]
+        if len(ysd) < 5:
+            return None
+        my = int(round(margin_mm / sp[1]))
+        y0 = max(0, int(ysd.min()) - my); y1 = min(ny - 1, int(ysd.max()) + my)
+        roi = sitk.RegionOfInterest(img, [x1 - x0 + 1, y1 - y0 + 1, nz], [x0, y0, 0])
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        sitk.WriteImage(roi, out_path)
+        log("donor-leg crop (%s): %dx%dx%d (was %dx%dx%d) -> ~%d%% of XY, full length kept" % (
+            side, x1 - x0 + 1, y1 - y0 + 1, nz, nx, ny, nz,
+            round(100.0 * (x1 - x0 + 1) * (y1 - y0 + 1) / (nx * ny))))
+        return out_path
+    except Exception as e:
+        log("donor-leg crop skipped:", e)
+        return None
+
+
 def _label_has_any(label_nii, values):
     """True if the label volume contains any of `values` (the fibula/tibia labels). Used by the fail-safe."""
     try:
@@ -1280,6 +1335,10 @@ def _label_has_any(label_nii, values):
 
 
 def segment(dicom_folder, series_id, region, work_dir):
+    side = ""
+    if region.startswith("leg"):                    # the UI sends "leg_R"/"leg_L" so the donor side rides the region arg
+        parts = region.split("_"); side = parts[1] if len(parts) > 1 else ""
+        region = "leg"
     if region not in REGIONS:
         raise ValueError("unknown region %r (expected head|leg)" % region)
     cfg = REGIONS[region]
@@ -1300,14 +1359,17 @@ def segment(dicom_folder, series_id, region, work_dir):
         # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
         # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
         # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
-        # SMART CROP + FAIL-SAFE. MOOSE is a WHOLE-SKELETON model: it needs the full leg (femur, knee,
-        # ankle, foot) to know it is a leg. Cropping to just the tibia/fibula band left two parallel shafts
-        # that it MISLABELLED as ARM bones (labels 5/6, no 7/8/26/27) -> "No Fibula_R" on OBERTO. So we crop
-        # ONLY the air/table around the legs (`_crop_leg_air`, full length kept) -> fewer voxels, faster, and
-        # the full anatomy is intact. FAIL-SAFE: if the crop still made MOOSE miss the fibula/tibia labels,
-        # we re-run on the FULL scan, so the result is ALWAYS correct (fast when the crop works, safe if not).
+        # SMART CROP + FAIL-SAFE. MOOSE is a WHOLE-SKELETON model that needs the full leg (femur, knee, ankle,
+        # foot) to KNOW it is a leg -- cropping to just the tibia/fibula band left two parallel shafts it
+        # MISLABELLED as ARM bones ("No Fibula_R" on OBERTO). But cropping to ONE WHOLE leg (the donor side,
+        # full length) keeps that context AND drops the other leg -> VERIFIED ~8x faster (2.9 min vs ~25) with
+        # correct fibula_R + tibia_R. If the side is unknown or detection fails, fall back to a plain air-crop.
+        # FAIL-SAFE: if the crop still made MOOSE miss the DONOR fibula/tibia, re-run on the FULL scan, so the
+        # result is ALWAYS correct (fast when the crop works, safe if not).
         nifti_full = nifti
-        cropped = _crop_leg_air(nifti_full, os.path.join(work_dir, "input", "CT_leg_air.nii.gz"))
+        cropped = _crop_leg_donor(nifti_full, side, os.path.join(work_dir, "input", "CT_leg_donor.nii.gz")) if side else None
+        if not cropped:
+            cropped = _crop_leg_air(nifti_full, os.path.join(work_dir, "input", "CT_leg_air.nii.gz"))
         if cropped:
             nifti = cropped
         # No amber reveal: stream a PASSIVE grayscale CT sweep from the (cropped) scan while MOOSE computes,
@@ -1321,8 +1383,9 @@ def segment(dicom_folder, series_id, region, work_dir):
             label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
         finally:
             _stop.set(); _sweeper.join(timeout=3)
-        if cropped and not _label_has_any(label_nii, cfg["labels"].keys()):
-            log("cropped leg produced NO fibula/tibia labels -> re-running MOOSE on the FULL scan (fail-safe)")
+        donor_lbls = ({8, 27} if side.upper().startswith("R") else {7, 26}) if side else set(cfg["labels"].keys())
+        if cropped and not _label_has_any(label_nii, donor_lbls):
+            log("cropped leg missing the DONOR fibula/tibia -> re-running MOOSE on the FULL scan (fail-safe)")
             label_nii = run_moose(nifti_full, cfg["moose_model"], work_dir)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)

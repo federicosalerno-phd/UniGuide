@@ -4725,7 +4725,7 @@ function segStart(){
     if(window._canalMesh)window._canalMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(window._tibiaMesh)window._tibiaMesh.visible=false;
     isDemo=false; invalidate();
   }
-  B.seg_run(s.folder, s.series_id, segState.region);
+  B.seg_run(s.folder, s.series_id, segState.region==='leg' ? 'leg_'+(segState.side||'R') : segState.region);   // donor side rides the region -> backend crops to that ONE leg (~8x faster MOOSE)
   _startWaitCube();                             // calm green "working" cube until the CT reveal germinates
 }
 function segEdit(){
