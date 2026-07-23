@@ -4552,7 +4552,7 @@ function _decodeStl(d){                      // seg_read_stl now sends float32 a
   return d;
 }
 function _scanGlow(mats){                     // inject a moving amber "scan" band into the mesh materials (WIP feel as it materialises)
-  const u={ y:{value:-1e12}, w:{value:16.0} };
+  const u={ y:{value:-1e12}, w:{value:26.0} };   // wide, soft band → a gentle golden wash, not a hard line
   mats.forEach(function(m){
     try{
       m.onBeforeCompile=function(sh){
@@ -4577,23 +4577,28 @@ function _crossfadeReveal(meshes, revOffset, startCam, fit){
   // GRADUAL CROSS-DISSOLVE between the two WORLDS: the slice-reveal cloud fades OUT while the WHOLE
   // finished view (mandible + skull + canal, or fibula + tibia) fades IN together, both visible the
   // whole time, each material to its own target opacity (skull stays translucent). A bright amber
-  // "scan" band sweeps up as it materialises. smoothstep over ~3.2 s so it is extremely fluid.
+  // "scan" band sweeps up as it materialises. smoothstep over ~5.5 s so it is extremely fluid.
   const box=new THREE.Box3(); const mats=[];
   meshes.forEach(function(mesh){ mesh.visible=true; mesh.updateWorldMatrix(true,true); box.expandByObject(mesh);
     _matsOf(mesh).forEach(function(m){ m._targetOp=(m.opacity===undefined?1:m.opacity); m._wasTransp=m.transparent; m._wasDW=m.depthWrite;
       m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; mats.push(m); }); });
   const scan=_scanGlow(mats);
   const y0=box.isEmpty()?0:box.min.y, y1=box.isEmpty()?1:box.max.y, span=Math.max(1,y1-y0);
-  if(startCam){ orbit.tgt.copy(startCam.tgt); orbit.r=startCam.r; }   // begin from the reveal framing (ingest may have snapped it)
-  const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=3200;
+  // Keep the view EXACTLY as it was on the slice reveal: NO auto-centre glide (that shift, and the
+  // per-frame transparent re-sort it triggered, were the "tremolio"). We only offset the camera by the
+  // SAME vector the reveal moved, so the model lands right where the slices were on screen -> nothing
+  // appears to move, and the camera is then left untouched for the whole fade.
+  try{ if(startCam){ orbit.tgt.copy(startCam.tgt); orbit.r=startCam.r; }
+       if(revOffset){ orbit.tgt.add(revOffset); }
+       applyOrbit(); }catch(e){}                                  // never let a camera hiccup block the dissolve
+  const t0=performance.now(), dur=5500;                            // very slow, extremely gradual dissolve
   (function tick(){
     const raw=Math.min(1,(performance.now()-t0)/dur);
-    const e = raw*raw*(3-2*raw);                                   // smoothstep: gentle, uniform, no fast middle -> never reads as a jump
+    const e = raw*raw*(3-2*raw);                                   // smoothstep: gentle, uniform
     mats.forEach(function(m){ m.opacity=m._targetOp*e; });          // the whole finished view fades IN, each to its own opacity
-    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });   // the slice cloud fades OUT, both visible together
-    scan.y.value = y0 - span*0.12 + span*1.24*raw;                   // the glow band sweeps bottom -> top, a touch past each end
-    if(fit){ orbit.tgt.lerpVectors(sTgt,fit.tgt,e); orbit.r=sR+(fit.r-sR)*e; if(fit.min){orbit.min=fit.min;orbit.max=fit.max;} applyOrbit(); }
-    invalidate();
+    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });   // the slice cloud fades OUT over the SAME duration, both visible together
+    scan.y.value = (y0 - scan.w.value) + (span + 2*scan.w.value)*raw;   // the golden band sweeps SLOWLY, fully entering at the base and clearing off the top
+    invalidate();                                                   // the camera is NOT touched during the fade -> no shift, no tremolio
     if(raw<1){ _xfadeRaf=requestAnimationFrame(tick); }
     else { _xfadeRaf=0; scan.y.value=-1e12; mats.forEach(function(m){ m.opacity=m._targetOp; m.transparent=!!m._wasTransp; m.depthWrite=(m._wasDW!==false); m.needsUpdate=true; }); _disposeGroupChunked(rev); }
   })();
@@ -4806,7 +4811,8 @@ function segLoadResult(r){
       if(hadReveal){
         let revOffset=null;
         if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }   // overlap the reveal onto the centered scene
-        _crossfadeReveal(meshes, revOffset, camBefore, _fitParams(finalMesh));   // gradual transition between the two whole worlds
+        else if(r.region==='leg' && window._fibulaOffset){ const o=window._fibulaOffset; revOffset=new THREE.Vector3(-o.ctr.x, -o.ctr.y-o.dy, -o.ctr.z); }   // overlap the leg cloud onto the fibula's display frame so the camera follows it there
+        _crossfadeReveal(meshes, revOffset, camBefore, _fitParams(finalMesh));   // gradual transition between the two whole worlds, camera left exactly as on the reveal
       } else {                                                 // no reveal to hand off from → just show + settle
         meshes.forEach(function(m){ if(m)m.visible=true; });
         const fit=_fitParams(finalMesh); if(fit){ orbit.tgt.copy(fit.tgt); orbit.r=fit.r; orbit.min=fit.min; orbit.max=fit.max; applyOrbit(); }
