@@ -4565,40 +4565,44 @@ function _scanGlow(mats){                     // inject a moving amber "scan" ba
   });
   return u;
 }
-function _crossfadeReveal(finalMesh, revOffset, startCam, fit){
+function _crossfadeReveal(meshes, revOffset, startCam, fit){
   if(_xfadeRaf){ cancelAnimationFrame(_xfadeRaf); _xfadeRaf=0; }
+  meshes=(Array.isArray(meshes)?meshes:[meshes]).filter(Boolean);
+  if(!meshes.length) return;
   const rev=_sliceGroup; _sliceGroup=null;                        // detach so a new Start can't touch it mid-fade
   if(_sliceAnim){ cancelAnimationFrame(_sliceAnim); _sliceAnim=0; }
   if(_sliceDrain){ clearTimeout(_sliceDrain); _sliceDrain=0; } _sliceQ=[]; _sliceN=0;
-  if(rev && revOffset) rev.position.copy(revOffset);             // overlap the finished mesh so the two worlds blend in place
+  if(rev && revOffset) rev.position.copy(revOffset);             // overlap the finished scene so the two worlds blend in place
   const revBase = rev? rev.children.map(m=>m.material.opacity) : [];
-  // GRADUAL CROSS-DISSOLVE between the two worlds: the slice reveal fades OUT while the finished model
-  // fades IN, BOTH visible together the whole time (no clip-fill pop). A bright amber "scan" band sweeps
-  // up the model as it materialises (work-in-progress feel). Slow + eased (easeInOutCubic) so it is
-  // extremely fluid, never steppy.
-  const box=new THREE.Box3().setFromObject(finalMesh);
-  const y0=box.min.y, y1=box.max.y, span=Math.max(1,y1-y0);
-  const mats=_matsOf(finalMesh); mats.forEach(function(m){ m._wasTransp=m.transparent; m._wasDW=m.depthWrite; m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; });
+  // GRADUAL CROSS-DISSOLVE between the two WORLDS: the slice-reveal cloud fades OUT while the WHOLE
+  // finished view (mandible + skull + canal, or fibula + tibia) fades IN together, both visible the
+  // whole time, each material to its own target opacity (skull stays translucent). A bright amber
+  // "scan" band sweeps up as it materialises. smoothstep over ~3.2 s so it is extremely fluid.
+  const box=new THREE.Box3(); const mats=[];
+  meshes.forEach(function(mesh){ mesh.visible=true; mesh.updateWorldMatrix(true,true); box.expandByObject(mesh);
+    _matsOf(mesh).forEach(function(m){ m._targetOp=(m.opacity===undefined?1:m.opacity); m._wasTransp=m.transparent; m._wasDW=m.depthWrite;
+      m.transparent=true; m.depthWrite=false; m.opacity=0; m.needsUpdate=true; mats.push(m); }); });
   const scan=_scanGlow(mats);
+  const y0=box.isEmpty()?0:box.min.y, y1=box.isEmpty()?1:box.max.y, span=Math.max(1,y1-y0);
   if(startCam){ orbit.tgt.copy(startCam.tgt); orbit.r=startCam.r; }   // begin from the reveal framing (ingest may have snapped it)
   const sTgt=orbit.tgt.clone(), sR=orbit.r; const t0=performance.now(), dur=3200;
   (function tick(){
     const raw=Math.min(1,(performance.now()-t0)/dur);
     const e = raw*raw*(3-2*raw);                                   // smoothstep: gentle, uniform, no fast middle -> never reads as a jump
-    mats.forEach(function(m){ m.opacity=e; });                       // the model fades IN
-    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });   // the slices fade OUT, both visible together
+    mats.forEach(function(m){ m.opacity=m._targetOp*e; });          // the whole finished view fades IN, each to its own opacity
+    if(rev) rev.children.forEach(function(m,i){ m.material.opacity=(revBase[i]||0)*(1-e); });   // the slice cloud fades OUT, both visible together
     scan.y.value = y0 - span*0.12 + span*1.24*raw;                   // the glow band sweeps bottom -> top, a touch past each end
     if(fit){ orbit.tgt.lerpVectors(sTgt,fit.tgt,e); orbit.r=sR+(fit.r-sR)*e; if(fit.min){orbit.min=fit.min;orbit.max=fit.max;} applyOrbit(); }
     invalidate();
     if(raw<1){ _xfadeRaf=requestAnimationFrame(tick); }
-    else { _xfadeRaf=0; scan.y.value=-1e12; mats.forEach(function(m){ m.opacity=1; m.transparent=!!m._wasTransp; m.depthWrite=(m._wasDW!==false); m.needsUpdate=true; }); _disposeGroupChunked(rev); }
+    else { _xfadeRaf=0; scan.y.value=-1e12; mats.forEach(function(m){ m.opacity=m._targetOp; m.transparent=!!m._wasTransp; m.depthWrite=(m._wasDW!==false); m.needsUpdate=true; }); _disposeGroupChunked(rev); }
   })();
 }
-function segShowCanal(path){
-  if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){return;}
-    if(!d||d.error||!d.positions||d.positions.length<9) return;
-    if(!modelPivot) return;
+function segShowCanal(path, cb){
+  if(!(B&&B.seg_read_stl)){ if(cb)cb(null); return; }
+  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){ if(cb)cb(null); return; }
+    if(!d||d.error||!d.positions||d.positions.length<9){ if(cb)cb(null); return; }
+    if(!modelPivot){ if(cb)cb(null); return; }
     if(window._canalMesh) disposeMesh(window._canalMesh);
     const off=window._mandCentroid||new THREE.Vector3();
     const g=new THREE.BufferGeometry();
@@ -4608,8 +4612,9 @@ function segShowCanal(path){
     const col=(typeof ED_COLORS!=='undefined'&&ED_COLORS[5])||[255,220,40];
     const m=new THREE.MeshStandardMaterial({color:(col[0]<<16)|(col[1]<<8)|col[2],emissive:0x1a1400,roughness:.5,metalness:0});
     const mesh=new THREE.Mesh(g,m); mesh.name='canal'; mesh.renderOrder=2; modelPivot.add(mesh);
-    window._canalMesh=mesh; invalidate();
-    $('segStatus').textContent='nerve canal loaded';
+    window._canalMesh=mesh;
+    if(cb){ mesh.visible=false; cb(mesh); }         // hidden until the coordinated transition fades it in
+    else { invalidate(); $('segStatus').textContent='nerve canal loaded'; }
   });
 }
 function segPickFolder(){
@@ -4735,11 +4740,11 @@ function segShowStl(name, path){
   // it to segLoadResult keeps the reveal sweeping and hands off with no freeze and no hard cut.
   $('segStatus').textContent=name+' ready';
 }
-function segShowSkull(path){                                    // translucent skull, so it is clearly a head
-  if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){return;}
-    if(!d||d.error||!d.positions||d.positions.length<9) return;
-    if(!modelPivot) return;
+function segShowSkull(path, cb){                                // translucent skull, so it is clearly a head
+  if(!(B&&B.seg_read_stl)){ if(cb)cb(null); return; }
+  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){ if(cb)cb(null); return; }
+    if(!d||d.error||!d.positions||d.positions.length<9){ if(cb)cb(null); return; }
+    if(!modelPivot){ if(cb)cb(null); return; }
     if(window._skullMesh) disposeMesh(window._skullMesh);
     const off=window._mandCentroid||new THREE.Vector3();
     const g=new THREE.BufferGeometry();
@@ -4748,13 +4753,14 @@ function segShowSkull(path){                                    // translucent s
     // BackSide: only the FAR shell of the skull draws, so it never fogs the mandible in front → the bone stays crisp, the skull reads as a cradle behind it
     const m=new THREE.MeshStandardMaterial({color:0xe2e6ee,roughness:.75,metalness:0,transparent:true,opacity:0.30,depthWrite:false,side:THREE.BackSide});
     const mesh=new THREE.Mesh(g,m); mesh.name='skull'; mesh.renderOrder=-1; modelPivot.add(mesh);
-    window._skullMesh=mesh; invalidate();
+    window._skullMesh=mesh;
+    if(cb){ mesh.visible=false; cb(mesh); } else invalidate();   // hidden until the coordinated transition fades it in
   });
 }
-function segShowTibia(path){                                    // translucent tibia = the LEG reference (like the skull for the head), aligned to the fibula's display frame
-  if(!(B&&B.seg_read_stl)) return;
-  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){return;}
-    if(!d||d.error||!d.positions||d.positions.length<9) return;
+function segShowTibia(path, cb){                                // translucent tibia = the LEG reference (like the skull for the head), aligned to the fibula's display frame
+  if(!(B&&B.seg_read_stl)){ if(cb)cb(null); return; }
+  B.seg_read_stl(path,function(s){ let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){ if(cb)cb(null); return; }
+    if(!d||d.error||!d.positions||d.positions.length<9){ if(cb)cb(null); return; }
     if(window._tibiaMesh) disposeMesh(window._tibiaMesh);
     const off=window._fibulaOffset||{ctr:new THREE.Vector3(),dy:300};
     const g=new THREE.BufferGeometry();
@@ -4762,7 +4768,8 @@ function segShowTibia(path){                                    // translucent t
     g.translate(-off.ctr.x,-off.ctr.y,-off.ctr.z); g.translate(0,-off.dy,0); g.computeVertexNormals();
     const m=new THREE.MeshStandardMaterial({color:0xe2e6ee,roughness:.75,metalness:0,transparent:true,opacity:0.30,depthWrite:false,side:THREE.BackSide});
     const mesh=new THREE.Mesh(g,m); mesh.name='tibia'; mesh.renderOrder=-1; group.add(mesh);
-    window._tibiaMesh=mesh; invalidate();
+    window._tibiaMesh=mesh;
+    if(cb){ mesh.visible=false; cb(mesh); } else invalidate();   // hidden until the coordinated transition fades it in
   });
 }
 function segLoadResult(r){
@@ -4777,30 +4784,35 @@ function segLoadResult(r){
   B.seg_read_stl(path, function(s){
     let d={}; try{d=_decodeStl(JSON.parse(s));}catch(x){}
     if(d.error){ segLog('Load failed: '+d.error); segClearGrow(false); return; }
-    ingest(d.positions, key);                                  // builds the finished mesh (small STL → cheap)
+    ingest(d.positions, key);                                  // builds the primary bone mesh
     const finalMesh=(r.region==='head') ? boneMesh : fibulaMesh;
-    if(hadReveal){
-      // head: overlap the reveal onto the centered mandible so the fade reads as an in-place morph.
-      // leg: the reveal is the whole-leg CT "forming" placeholder at world coords, so leave it in place
-      // and let the camera glide to the donor fibula while it dissolves (a smooth fly-to-the-result).
-      let revOffset=null;
-      if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }
-      _crossfadeReveal(finalMesh, revOffset, camBefore, _fitParams(finalMesh));   // gradual, non-blocking hand-off
-    } else {                                                   // already shown live (head) → just settle the view, no re-fade
-      const fit=_fitParams(finalMesh); if(fit){ orbit.tgt.copy(fit.tgt); orbit.r=fit.r; orbit.min=fit.min; orbit.max=fit.max; applyOrbit(); }
-    }
-    // Defer the secondary overlays + reframe across frames so nothing piles into one turn (no freeze).
-    const tasks=[];
-    if(r.region==='leg'){
-      // the LEG view is the donor: show fibula + tibia only, NOT the leftover mandible/skull/canal (head work)
-      tasks.push(function(){ if(boneMesh)boneMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(window._canalMesh)window._canalMesh.visible=false; });
-      tasks.push(function(){ const tk='Tibia_'+segState.side; if(stls[tk]) segShowTibia(stls[tk]); });   // the donor tibia as a translucent reference beside the fibula
+    if(finalMesh && hadReveal){ finalMesh.visible=false;       // hide until the ONE coordinated transition (no early flash)
+      orbit.tgt.copy(camBefore.tgt); orbit.r=camBefore.r; applyOrbit(); }   // hold the reveal framing while the rest loads
+    const meshes=[finalMesh];
+    // Load the WHOLE finished view too (mandible + skull + canal, or fibula + tibia) so it all fades in
+    // TOGETHER from the reveal cloud — not the bone first then the skull popping in. Each secondary is
+    // built HIDDEN; the crossfade reveals them all at once as the two worlds dissolve into each other.
+    const loads=[];
+    if(r.region==='head'){
+      if(stls['MandibularCanal']) loads.push(function(next){ segShowCanal(stls['MandibularCanal'], function(m){ if(m)meshes.push(m); next(); }); });
+      if(stls['Skull']) loads.push(function(next){ segShowSkull(stls['Skull'], function(m){ if(m)meshes.push(m); next(); }); });
     } else {
-      tasks.push(function(){ if(stls['MandibularCanal']) segShowCanal(stls['MandibularCanal']); });      // re-add the nerve canal aligned to the re-centered mandible
-      tasks.push(function(){ if(stls['Skull']) segShowSkull(stls['Skull']); });
+      const tk='Tibia_'+segState.side;
+      if(stls[tk]) loads.push(function(next){ segShowTibia(stls[tk], function(m){ if(m)meshes.push(m); next(); }); });
     }
-    tasks.push(function(){ if(typeof resize==='function')resize(); if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate(); });
-    _deferChain(tasks);
+    (function run(i){
+      if(i<loads.length){ try{ loads[i](function(){ run(i+1); }); }catch(e){ run(i+1); } return; }
+      if(r.region==='leg'){ if(boneMesh)boneMesh.visible=false; if(window._skullMesh)window._skullMesh.visible=false; if(window._canalMesh)window._canalMesh.visible=false; }   // leg shows only the leg
+      if(hadReveal){
+        let revOffset=null;
+        if(r.region==='head' && window._mandCentroid){ revOffset=window._mandCentroid.clone().multiplyScalar(-1); }   // overlap the reveal onto the centered scene
+        _crossfadeReveal(meshes, revOffset, camBefore, _fitParams(finalMesh));   // gradual transition between the two whole worlds
+      } else {                                                 // no reveal to hand off from → just show + settle
+        meshes.forEach(function(m){ if(m)m.visible=true; });
+        const fit=_fitParams(finalMesh); if(fit){ orbit.tgt.copy(fit.tgt); orbit.r=fit.r; orbit.min=fit.min; orbit.max=fit.max; applyOrbit(); }
+      }
+      if(typeof resize==='function')resize(); if(typeof renderPlaneOverlay==='function')renderPlaneOverlay(); invalidate();
+    })(0);
     const others=Object.keys(stls).filter(function(k){return k!==key;});
     segLog('Loaded '+key+'. Also produced: '+(others.join(', ')||'none'));
     closeSegmentation(); toast(key+' segmented and loaded.');
