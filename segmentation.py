@@ -1318,16 +1318,14 @@ def segment(dicom_folder, series_id, region, work_dir):
         # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
         # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
         # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
-        # CROP to the lower-leg band (tibia+fibula), dropping the pelvis/femur above and the foot below, so
-        # MOOSE runs on ~40% of the slices (~2.4x faster + far less RAM). Keeps BOTH legs (donor side picked
-        # from the labels) -> no left/right risk. Falls back to the full scan if detection is uncertain.
-        roi = _crop_leg_roi(nifti, os.path.join(work_dir, "input", "CT_leg_roi.nii.gz"))
-        if roi:
-            nifti = roi
-            log("cropped the leg to the tibia/fibula band before MOOSE")
-        # No amber reveal: stream a PASSIVE grayscale CT sweep from the (cropped) scan while MOOSE computes,
-        # so slices scroll right away and the wait never feels stuck. MOOSE runs silently; the slow
-        # crossfade from the CT world to the 3D model IS the reveal.
+        # DO NOT crop before MOOSE. It is a WHOLE-SKELETON model and needs the full leg context (femur,
+        # knee, ankle, foot) to label the fibula/tibia. Cropping to just the tibia/fibula band made MOOSE
+        # see two parallel bones and MISLABEL them as ARM bones (it produced labels 5/6, no 7/8/26/27) ->
+        # "No Fibula_R produced" on OBERTO. `_crop_leg_roi` stays defined but UNUSED (a safe XY-only air-crop
+        # that keeps the full leg length could speed MOOSE without losing context, but must be MOOSE-verified
+        # first). So MOOSE gets the full scan -> correct fibula/tibia.
+        # No amber reveal: stream a PASSIVE grayscale CT sweep from the scan while MOOSE computes, so slices
+        # scroll right away. MOOSE runs silently; the slow crossfade from the CT to the model IS the reveal.
         import threading
         _stop = threading.Event()
         _sweeper = threading.Thread(target=_live_ct_sweep, args=(nifti, _stop), daemon=True)
