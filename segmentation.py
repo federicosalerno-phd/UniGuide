@@ -308,11 +308,11 @@ def emit_reveal_from_ct(ct_nifti, label_nii, bone_vals, step_mm=1.2, max_slices=
 
     for zi in zs:
         gi = (np.clip((ct[zi] + 150.0) / 1500.0, 0, 1) * 255).astype(np.uint8)   # bone-ish window
-        gih = (gi.astype(np.float32) * 0.4)                                       # DIM the CT so stacked slices never fog
+        gih = (gi.astype(np.float32) * 0.62)                                      # SAME brightness as the head reveal (was dimmer -> looked different)
         rgba = np.zeros((ny, nx, 4), np.uint8)
-        rgba[..., 0] = (gih * 0.80).astype(np.uint8); rgba[..., 1] = (gih * 0.88).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool, dim context
-        rgba[..., 3] = np.where(gi > 80, 14, 0).astype(np.uint8)                  # very faint haze → crisp, not "sfumata"
-        rgba[bone[zi]] = (255, 176, 82, 255)                                      # warm amber bone, opaque → pops, reads clean while it forms
+        rgba[..., 0] = (gih * 0.82).astype(np.uint8); rgba[..., 1] = (gih * 0.90).astype(np.uint8); rgba[..., 2] = gih.astype(np.uint8)   # cool but VISIBLE context, identical to the head
+        rgba[..., 3] = np.where(gi > 55, 42, 0).astype(np.uint8)                  # same visible CT haze as the head reveal
+        rgba[bone[zi]] = (255, 186, 88, 255)                                      # same warm amber as the head's mandible -> identical style/colour
         im = Image.fromarray(rgba, "RGBA")
         if im.width > target_px:
             im = im.resize((target_px, max(1, int(target_px * im.height / im.width))), Image.LANCZOS)
@@ -1246,17 +1246,16 @@ def segment(dicom_folder, series_id, region, work_dir):
         # float64) through predict_single_npy_array. So the LEG uses MOOSE. It has no per-tile hook, so
         # the reveal is replayed from its finished label: the fibula/tibia sweep up in 3D right after
         # compute (sharp, native resolution). The HEAD keeps its direct-nnU-Net live reveal.
-        # Stream a LIVE "forming" animation from the CT while MOOSE segments (it has no per-tile hook),
-        # so the leg builds up in real time like the mandible. The impeccable MOOSE fibula/tibia replace
-        # the placeholder at the end (UI crossfade).
-        import threading
-        _stop = threading.Event()
-        _sweeper = threading.Thread(target=_live_ct_sweep, args=(nifti, _stop), daemon=True)
-        _sweeper.start()
+        # MOOSE has NO per-tile hook, so nothing can stream DURING compute — the "working" cube covers
+        # that wait. Once MOOSE returns, replay a reveal that paints ONLY the fibula/tibia (exactly like
+        # the head reveal paints only the mandible), so the leg slices match the head in STYLE and COLOUR
+        # instead of the old placeholder that lit up ALL leg bone (the "always yellow" look). The label is
+        # now in the input-CT frame (run_moose staging fix), so `emit_reveal_from_ct` overlays it cleanly.
+        label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
         try:
-            label_nii = run_moose(nifti, cfg["moose_model"], work_dir)
-        finally:
-            _stop.set(); _sweeper.join(timeout=3)
+            emit_reveal_from_ct(nifti, label_nii, set(cfg["labels"].keys()))
+        except Exception as e:
+            log("leg reveal skipped:", e)
     stl_dir = os.path.join(work_dir, "stl")
     shutil.rmtree(stl_dir, ignore_errors=True)   # drop stale STLs from a previous region (e.g. leftover leg bones)
     stls = labels_to_stls(label_nii, cfg, stl_dir)
